@@ -775,7 +775,7 @@ EOF
 set -euo pipefail
 
 # Configuration
-REPO_URL="https://raw.githubusercontent.com/yourusername/eth-node-installer/main"
+REPO_URL="https://raw.githubusercontent.com/Cryptizer69/nodeboi/main"
 INSTALL_DIR="$HOME"
 SCRIPT_VERSION="1.0.0"
 
