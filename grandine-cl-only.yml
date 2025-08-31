@@ -20,7 +20,6 @@ services:
       - ./jwt:/var/lib/grandine/ee-secret
     environment:
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
-      - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - CL_EXTRAS=${CL_EXTRAS:-}
