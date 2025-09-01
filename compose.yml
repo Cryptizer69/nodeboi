@@ -1,0 +1,12 @@
+x-logging: &logging
+ logging:
+   driver: json-file
+   options:
+     max-size: 100m
+     max-file: "3"
+     tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+networks:
+ default:
+   name: ${NODE_NAME:-ethnode1}-net
+   driver: bridge
