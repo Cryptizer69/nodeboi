@@ -53,7 +53,7 @@ services:
       - --discovery-port=${CL_P2P_PORT}
       - --quic-port=${CL_QUIC_PORT}
       - --target-peers=${CL_MAX_PEER_COUNT}
-      - --eth1-rpc-urls=http://execution:8545
+      - --eth1-rpc-urls=http://execution:8551
       - --jwt-secret=/var/lib/grandine/ee-secret/jwtsecret
       - --metrics
       - --metrics-address=0.0.0.0
