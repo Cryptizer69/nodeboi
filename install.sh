@@ -37,6 +37,7 @@ handle_error() {
 # Check for required commands
 check_requirements() {
     local missing_deps=""
+    local need_docker_compose=false
     
     # Check for git
     if ! command -v git &> /dev/null; then
@@ -46,35 +47,104 @@ check_requirements() {
     # Check for docker
     if ! command -v docker &> /dev/null; then
         missing_deps+="docker "
+        need_docker_compose=true  # If docker is missing, we'll need to install compose too
+    else
+        # Docker exists, check for Docker Compose v2 (plugin)
+        if ! docker compose version &> /dev/null; then
+            echo -e "${YELLOW}[WARNING]${NC} Docker Compose v2 plugin not found"
+            need_docker_compose=true
+        else
+            echo -e "${GREEN}✓${NC} Docker Compose v2 detected: $(docker compose version --short)"
+        fi
     fi
     
-    # Check for docker-compose
-    if ! command -v docker-compose &> /dev/null; then
-        missing_deps+="docker-compose "
-    fi
-    
-    if [[ -n "$missing_deps" ]]; then
+    if [[ -n "$missing_deps" ]] || [[ "$need_docker_compose" == true ]]; then
         echo -e "${YELLOW}[WARNING]${NC} Missing dependencies: ${missing_deps}"
+        
+        if [[ "$need_docker_compose" == true ]] && [[ -z "$missing_deps" ]]; then
+            echo -e "${YELLOW}[WARNING]${NC} Docker Compose v2 plugin needs to be installed"
+        fi
+        
         echo "Installing missing dependencies..."
         
         # Update package list
         sudo apt-get update || handle_error "Failed to update package list"
         
-        # Install missing dependencies
-        for dep in $missing_deps; do
-            echo "Installing $dep..."
-            if [[ "$dep" == "docker" ]]; then
-                # Docker requires special installation
-                curl -fsSL https://get.docker.com -o get-docker.sh
-                sudo sh get-docker.sh || handle_error "Failed to install Docker"
-                sudo usermod -aG docker $USER
-                rm get-docker.sh
-            else
-                sudo apt-get install -y "$dep" || handle_error "Failed to install $dep"
-            fi
-        done
+        # Install git if missing
+        if [[ "$missing_deps" == *"git"* ]]; then
+            echo "Installing git..."
+            sudo apt-get install -y git || handle_error "Failed to install git"
+        fi
         
-        echo -e "${GREEN}✓${NC} Dependencies installed successfully"
+        # Install Docker and Docker Compose v2 if needed
+        if [[ "$missing_deps" == *"docker"* ]]; then
+            echo "Installing Docker with Compose v2 plugin..."
+            
+            # Remove old Docker versions if they exist
+            sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+            
+            # Install prerequisites
+            sudo apt-get install -y \
+                ca-certificates \
+                curl \
+                gnupg \
+                lsb-release || handle_error "Failed to install Docker prerequisites"
+            
+            # Add Docker's official GPG key
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            
+            # Set up the repository
+            echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            # Update package index with Docker packages
+            sudo apt-get update || handle_error "Failed to update package list with Docker repository"
+            
+            # Install Docker Engine with Compose plugin
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || handle_error "Failed to install Docker with Compose plugin"
+            
+            # Add user to docker group
+            sudo usermod -aG docker $USER
+            
+        elif [[ "$need_docker_compose" == true ]]; then
+            # Docker exists but Compose v2 plugin is missing
+            echo "Installing Docker Compose v2 plugin..."
+            
+            # Try to install the compose plugin
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin || {
+                # If apt installation fails, try manual installation
+                echo "Attempting manual installation of Docker Compose v2..."
+                
+                # Create CLI plugins directory
+                mkdir -p ~/.docker/cli-plugins/
+                
+                # Download Docker Compose v2
+                COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+                curl -SL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o ~/.docker/cli-plugins/docker-compose
+                
+                # Make it executable
+                chmod +x ~/.docker/cli-plugins/docker-compose
+                
+                # Verify installation
+                if docker compose version &> /dev/null; then
+                    echo -e "${GREEN}✓${NC} Docker Compose v2 installed successfully"
+                else
+                    handle_error "Failed to install Docker Compose v2"
+                fi
+            }
+        fi
+        
+        echo -e "${GREEN}✓${NC} All dependencies installed successfully"
+        
+        # Verify Docker Compose v2 is working
+        if docker compose version &> /dev/null; then
+            echo -e "${GREEN}✓${NC} Docker Compose v2 is ready: $(docker compose version --short)"
+        else
+            echo -e "${YELLOW}[WARNING]${NC} Docker Compose v2 verification failed. You may need to restart your shell or log out and back in."
+        fi
     fi
 }
 
@@ -107,6 +177,21 @@ install_nodeboi() {
     # Clone repository
     echo "Downloading NODEBOI from GitHub..."
     git clone "$REPO_URL" "$INSTALL_DIR" || handle_error "Failed to clone repository"
+    
+    # Update any docker-compose references to docker compose in the cloned files
+    echo "Updating Docker Compose references to v2..."
+    if [[ -f "$INSTALL_DIR/nodeboi.sh" ]]; then
+        sed -i 's/docker-compose/docker compose/g' "$INSTALL_DIR/nodeboi.sh"
+    fi
+    
+    # Update any compose files to use the correct version format for v2
+    for compose_file in "$INSTALL_DIR"/*.yml "$INSTALL_DIR"/*.yaml "$INSTALL_DIR"/docker-compose.*; do
+        if [[ -f "$compose_file" ]]; then
+            # Update version to 3.8 if it's using an older version
+            sed -i "s/^version: ['\"]2[^'\"]*['\"]/version: '3.8'/g" "$compose_file"
+            sed -i "s/^version: ['\"]3\.[0-7]['\"]$/version: '3.8'/g" "$compose_file"
+        fi
+    done
     
     # Make main script executable
     chmod +x "$INSTALL_DIR/nodeboi.sh" || handle_error "Failed to set permissions"
@@ -172,6 +257,12 @@ fi
 if [[ $? -eq 0 ]]; then
     echo -e "${GREEN}✓${NC} NODEBOI updated successfully!"
     
+    # Update docker-compose references to docker compose after update
+    echo "Updating Docker Compose references to v2..."
+    if [[ -f "$INSTALL_DIR/nodeboi.sh" ]]; then
+        sed -i 's/docker-compose/docker compose/g' "$INSTALL_DIR/nodeboi.sh"
+    fi
+    
     # Check if update script itself was updated
     if git diff HEAD~1 HEAD --name-only | grep -q "update.sh"; then
         echo -e "${YELLOW}[INFO]${NC} Update script was modified. Please run 'nodeboi update' again."
@@ -195,6 +286,7 @@ UPDATESCRIPT
     print_nodeboi_art
     echo -e "${GREEN}${BOLD}✅ NODEBOI installed successfully!${NC}\n"
     echo -e "${CYAN}Installation location:${NC} $INSTALL_DIR"
+    echo -e "${CYAN}Docker Compose:${NC} v2 (docker compose)"
     echo -e "${CYAN}Usage:${NC} Just type ${YELLOW}'nodeboi'${NC} from any directory\n"
     echo -e "${CYAN}Commands:${NC}"
     echo -e "  ${YELLOW}nodeboi${NC}           - Show dashboard"
