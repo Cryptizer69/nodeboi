@@ -403,31 +403,106 @@ prompt_consensus_client() {
 get_latest_version() {
     local client=$1
     local version=""
-    local github_token="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"
+    local github_token="${GITHUB_TOKEN:-}"  # Optional token from environment
+    
+    # Simple cache check (inline, no separate function)
+    local cache_file="$HOME/.nodeboi/cache/versions.cache"
+    local cache_duration=3600  # 1 hour
+    
+    # Create cache dir if needed
+    mkdir -p "$(dirname "$cache_file")"
+    
+    # Check cache first
+    if [[ -f "$cache_file" ]]; then
+        local cache_entry=$(grep "^${client}:" "$cache_file" 2>/dev/null | tail -1)
+        if [[ -n "$cache_entry" ]]; then
+            local cached_version=$(echo "$cache_entry" | cut -d: -f2)
+            local cached_time=$(echo "$cache_entry" | cut -d: -f3)
+            local current_time=$(date +%s)
+            
+            if [[ $((current_time - cached_time)) -lt $cache_duration ]]; then
+                echo "Using cached version for $client: $cached_version" >&2
+                echo "$cached_version"
+                return 0
+            fi
+        fi
+    fi
     
     echo "Checking latest version for $client..." >&2
-
+    
+    # Build curl command with optional auth
+    local curl_opts="-sL -H 'User-Agent: NODEBOI' --max-time 5"
+    if [[ -n "$github_token" ]]; then
+        curl_opts="$curl_opts -H 'Authorization: token $github_token'"
+    fi
+    
+    # Fetch based on client type
     case $client in
         reth)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/paradigmxyz/reth/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/paradigmxyz/reth/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/paradigmxyz/reth/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="v1.6.0"  # Fallback
             ;;
         besu)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/hyperledger/besu/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/hyperledger/besu/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/hyperledger/besu/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="25.8.0"  # Fallback
             ;;
         nethermind)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/NethermindEth/nethermind/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/NethermindEth/nethermind/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/NethermindEth/nethermind/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="1.29.0"  # Fallback
             ;;
         lodestar)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/ChainSafe/lodestar/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/ChainSafe/lodestar/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/ChainSafe/lodestar/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="v1.23.0"  # Fallback
             ;;
         teku)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/Consensys/teku/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/Consensys/teku/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/Consensys/teku/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="25.7.1"  # Fallback
             ;;
         grandine)
-            version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/grandinetech/grandine/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$github_token" ]]; then
+                version=$(curl -sL -H "Authorization: token $github_token" -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/grandinetech/grandine/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            else
+                version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/grandinetech/grandine/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
+            fi
+            [[ -z "$version" ]] && version="0.5.0"  # Fallback
+            ;;
+        *)
+            echo "Unknown client: $client" >&2
+            version="latest"
             ;;
     esac
-
+    
+    # Save to cache if we got a version (not using fallback)
+    if [[ -n "$version" ]] && [[ "$version" != "latest" ]]; then
+        # Remove old cache entry
+        if [[ -f "$cache_file" ]]; then
+            grep -v "^${client}:" "$cache_file" > "$cache_file.tmp" 2>/dev/null || true
+            mv "$cache_file.tmp" "$cache_file"
+        fi
+        # Add new cache entry
+        echo "${client}:${version}:$(date +%s)" >> "$cache_file"
+    fi
+    
     echo "$version"
 }
 
