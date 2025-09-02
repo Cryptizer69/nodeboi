@@ -1,0 +1,39 @@
+name: Auto Version and Update Files
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Bump version and create tag
+      id: tag_version
+      uses: anothrNick/github-tag-action@1.67.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        DEFAULT_BUMP: patch
+        WITH_V: true
+        INITIAL_VERSION: 0.1.0
+    
+    - name: Update version in files
+      run: |
+        VERSION="${{ steps.tag_version.outputs.new_tag }}"
+        # Update nodeboi.sh header
+        sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/$VERSION/g" nodeboi.sh
+        # Update install.sh
+        sed -i "s/SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$VERSION\"/g" install.sh
+        
+    - name: Commit version updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add nodeboi.sh install.sh
+        git diff --staged --quiet || git commit -m "Update version to ${{ steps.tag_version.outputs.new_tag }}"
+        git push
