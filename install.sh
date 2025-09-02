@@ -159,7 +159,7 @@ install_nodeboi() {
     # Check if already installed
     if [[ -d "$INSTALL_DIR" ]]; then
         echo -e "${YELLOW}[WARNING]${NC} NODEBOI appears to be already installed at $INSTALL_DIR"
-        read -p "Do you want to reinstall? (y/n): " -n 1 -r
+        read -p "Do you want to reinstall? (y/n): " -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo "Installation cancelled."
