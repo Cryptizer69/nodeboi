@@ -11,7 +11,7 @@ PINK='\033[38;5;213m'
 
 REPO_URL="https://github.com/Cryptizer69/nodeboi.git"
 INSTALL_DIR="$HOME/.nodeboi"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="v0.1.1"
 
 # ASCII Art function
 print_nodeboi_art() {
@@ -24,8 +24,9 @@ print_nodeboi_art() {
     ██║ ╚████║╚██████╔╝██████╔╝███████╗██████╔╝╚██████╔╝██║
     ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
 EOF
+    echo -e "${NC}"
     echo -e "                    ${YELLOW}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${GREEN}v${SCRIPT_VERSION}${NC}"
+    echo -e "                           ${GREEN}${SCRIPT_VERSION}${NC}"
     echo ""
 }
 
@@ -48,7 +49,7 @@ check_requirements() {
     # Check for docker
     if ! command -v docker &> /dev/null; then
         missing_deps+="docker "
-        need_docker_compose=true  # If docker is missing, we'll need to install compose too
+        need_docker_compose=true
     else
         # Docker exists, check for Docker Compose v2 (plugin)
         if ! docker compose version &> /dev/null; then
@@ -159,7 +160,7 @@ install_nodeboi() {
     # Check if already installed
     if [[ -d "$INSTALL_DIR" ]]; then
         echo -e "${YELLOW}[WARNING]${NC} NODEBOI appears to be already installed at $INSTALL_DIR"
-        read -p "Do you want to reinstall? (y/n): " -r
+        read -p "Do you want to reinstall? (y/n): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo "Installation cancelled."
@@ -197,30 +198,97 @@ install_nodeboi() {
     # Make main script executable
     chmod +x "$INSTALL_DIR/nodeboi.sh" || handle_error "Failed to set permissions"
     
-    # Create symlink in /usr/local/bin
-    echo "Creating system link (requires sudo)..."
-    sudo ln -sf "$INSTALL_DIR/nodeboi.sh" /usr/local/bin/nodeboi || handle_error "Failed to create symlink"
+    # Create wrapper script instead of symlink (avoids caching issues)
+    echo "Creating nodeboi command (requires sudo)..."
+    
+    # Remove old symlink if it exists
+    if [[ -L "/usr/local/bin/nodeboi" ]]; then
+        sudo rm /usr/local/bin/nodeboi
+    fi
+    
+    # Create wrapper script
+    sudo tee /usr/local/bin/nodeboi > /dev/null << 'EOF' || handle_error "Failed to create command"
+#!/bin/bash
+# NODEBOI wrapper script - avoids symlink caching issues
+exec bash ~/.nodeboi/nodeboi.sh "$@"
+EOF
+    sudo chmod +x /usr/local/bin/nodeboi || handle_error "Failed to set permissions"
     
     # Create update script
     cat > "$INSTALL_DIR/update.sh" << 'UPDATESCRIPT'
 #!/bin/bash
+
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m'
+
 INSTALL_DIR="$HOME/.nodeboi"
 
 echo -e "${CYAN}Updating NODEBOI...${NC}"
+
+# Check if directory exists
+if [[ ! -d "$INSTALL_DIR" ]]; then
+    echo -e "${RED}[ERROR]${NC} NODEBOI directory not found at $INSTALL_DIR"
+    exit 1
+fi
+
 cd "$INSTALL_DIR" || exit 1
 
-# Gewoon forceer de update
+# Force update from GitHub - no questions about local changes
+echo "Fetching latest version from GitHub..."
 git fetch origin
+
+# Reset to match GitHub exactly
 git reset --hard origin/main
 
-# Maak uitvoerbaar
+if [[ $? -eq 0 ]]; then
+    echo -e "${GREEN}✓${NC} Successfully pulled latest changes"
+else
+    echo -e "${RED}[ERROR]${NC} Failed to pull from GitHub"
+    echo "Please check your internet connection and try again."
+    read -p "Press Enter to continue..."
+    exit 1
+fi
+
+# Make sure script is executable
 chmod +x "$INSTALL_DIR/nodeboi.sh"
 
-echo -e "${GREEN}✓${NC} NODEBOI updated to latest version!"
-read -p "Press Enter to continue..."
+# Check if old symlink exists and needs to be replaced with wrapper
+if [[ -L "/usr/local/bin/nodeboi" ]]; then
+    echo -e "${YELLOW}Converting old symlink to wrapper script...${NC}"
+    sudo rm /usr/local/bin/nodeboi
+    
+    # Create wrapper script
+    sudo tee /usr/local/bin/nodeboi > /dev/null << 'WRAPPER'
+#!/bin/bash
+# NODEBOI wrapper script - avoids symlink caching issues
+exec bash ~/.nodeboi/nodeboi.sh "$@"
+WRAPPER
+    
+    sudo chmod +x /usr/local/bin/nodeboi
+    echo -e "${GREEN}✓${NC} Wrapper script created"
+fi
+
+# Update docker-compose references to docker compose v2
+if grep -q "docker-compose" "$INSTALL_DIR/nodeboi.sh" 2>/dev/null; then
+    echo "Updating Docker Compose references to v2..."
+    sed -i 's/docker-compose/docker compose/g' "$INSTALL_DIR/nodeboi.sh"
+fi
+
+# Show version info
+CURRENT_VERSION=$(grep -oP 'v\d+\.\d+\.\d+' "$INSTALL_DIR/nodeboi.sh" | head -1)
+if [[ -n "$CURRENT_VERSION" ]]; then
+    echo -e "${GREEN}✓${NC} NODEBOI updated to version ${CYAN}${CURRENT_VERSION}${NC}"
+else
+    echo -e "${GREEN}✓${NC} NODEBOI updated successfully!"
+fi
+
+echo ""
+echo -e "${GREEN}Update complete!${NC}"
+echo ""
+read -p "Press Enter to return to menu..."
 UPDATESCRIPT
     
     chmod +x "$INSTALL_DIR/update.sh"
