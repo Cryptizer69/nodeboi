@@ -1,6 +1,6 @@
 #!/bin/bash
 # NODEBOI v1.0.0 - Ethereum Node Automation
-set -euo pipefail
+set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
 #==============================================================================
