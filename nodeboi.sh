@@ -978,12 +978,12 @@ install_node() {
         return
     }
     
-    # Network access configuration
+    # Network access configuration with UPDATED text and indicators
     echo -e "\n${CYAN}${BOLD}Network Access Configuration${NC}\n=============================="
     echo "Choose access level for RPC/REST APIs:"
-    echo "  1) Localhost only (most secure) - 127.0.0.1"
-    echo "  2) LAN access (for local network) - Your LAN IP" 
-    echo "  3) All interfaces (use with caution) - 0.0.0.0"
+    echo "  1) My machine only (most secure) - 127.0.0.1"
+    echo "  2) Local network access - Your LAN IP" 
+    echo "  3) All networks (use with caution) - 0.0.0.0"
     echo
 
     read -p "Select access level [1-3] (default: 1): " -n 1 -r access_choice
@@ -1004,14 +1004,14 @@ install_node() {
             ;;
         3)
             sed -i "s/HOST_IP=.*/HOST_IP=0.0.0.0/" "$node_dir/.env"
-            echo -e "${RED}⚠ WARNING: RPC/REST APIs accessible from ANY network interface${NC}"
+            echo -e "${RED}⚠ WARNING: RPC/REST APIs accessible from ALL networks${NC}"
             echo "Make sure you haven't forwarded these ports on your router!"
             read -p "Press Enter to acknowledge this warning: "
             ;;
         *)
-            # Default: localhost only
+            # Default: my machine only
             sed -i "s/HOST_IP=.*/HOST_IP=127.0.0.1/" "$node_dir/.env"
-            echo "APIs restricted to localhost access only"
+            echo "APIs restricted to your machine only"
             ;;
     esac
     
@@ -1508,20 +1508,20 @@ check_node_health() {
         fi
     fi
 
-    # Determine endpoint display based on HOST_IP
+    # Determine endpoint display based on HOST_IP with NEW indicators
     local endpoint_host="localhost"
     local access_indicator=""
     
     if [[ "$host_ip" == "127.0.0.1" ]]; then
         endpoint_host="localhost"
-        access_indicator=" ${GREEN}[L]${NC}"  # Local only
+        access_indicator=" ${GREEN}[M]${NC}"  # My machine only
     elif [[ "$host_ip" == "0.0.0.0" ]]; then
         # Show actual LAN IP if bound to all interfaces
         endpoint_host=$(hostname -I | awk '{print $1}')
-        access_indicator=" ${RED}[A]${NC}"  # All interfaces
+        access_indicator=" ${RED}[A]${NC}"  # All networks
     elif [[ -n "$host_ip" ]]; then
         endpoint_host="$host_ip"
-        access_indicator=" ${YELLOW}[N]${NC}"  # Network/LAN
+        access_indicator=" ${YELLOW}[L]${NC}"  # Local network
     fi
 
     # Display status with sync info and correct endpoints
@@ -1543,6 +1543,7 @@ check_node_health() {
     echo
 }
 
+# Updated print_dashboard function with new legend
 print_dashboard() {
     echo -e "${BOLD}Node Status Dashboard${NC}\n====================\n"
 
@@ -1559,7 +1560,7 @@ print_dashboard() {
     else
         echo "─────────────────────────────"
         echo -e "Legend: ${GREEN}●${NC} Running | ${RED}●${NC} Stopped | ${GREEN}✓${NC} Healthy | ${RED}✗${NC} Unhealthy | ${YELLOW}⬆${NC} Update"
-        echo -e "Access: ${GREEN}[L]${NC} Local | ${YELLOW}[N]${NC} Network | ${RED}[A]${NC} All interfaces"
+        echo -e "Access: ${GREEN}[M]${NC} My machine | ${YELLOW}[L]${NC} Local network | ${RED}[A]${NC} All networks"
         echo
     fi
 }
