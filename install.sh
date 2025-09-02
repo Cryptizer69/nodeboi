@@ -7,6 +7,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+PINK='\033[38;5;213m'
 
 REPO_URL="https://github.com/Cryptizer69/nodeboi.git"
 INSTALL_DIR="$HOME/.nodeboi"
@@ -14,7 +15,7 @@ SCRIPT_VERSION="1.0.0"
 
 # ASCII Art function
 print_nodeboi_art() {
-    echo -e "${CYAN}${BOLD}"
+    echo -e "${PINK}${BOLD}"
     cat << "EOF"
     ███╗   ██╗ ██████╗ ██████╗ ███████╗██████╗  ██████╗ ██╗
     ████╗  ██║██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║
