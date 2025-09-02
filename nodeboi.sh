@@ -689,7 +689,7 @@ copy_config_files() {
     local node_dir="$1"
     local exec_client="$2"
     local cons_client="$3"
-    local script_dir="$HOME/nodeboi"
+    local script_dir="$HOME/.nodeboi"
     
     [[ ! -d "$script_dir" ]] && { echo "Error: Configuration directory $script_dir not found" >&2; return 1; }
     [[ -z "$node_dir" ]] || [[ ! -d "$node_dir" ]] && { echo "Error: Invalid node directory" >&2; return 1; }
