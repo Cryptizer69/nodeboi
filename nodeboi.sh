@@ -92,7 +92,7 @@ check_prerequisites() {
         [[ "$install_docker" == true ]] && echo "  • docker/docker compose v2 - essential for running node containers"
         
         echo -e "\n${YELLOW}These tools are necessary for running NODEBOI.${NC}"
-        read -p "Would you like to install the missing prerequisites now? [Y/n]: " -r
+        read -p "Would you like to install the missing prerequisites now? [y/n]: " -r
         echo
         
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -521,7 +521,7 @@ prompt_version() {
     echo "  3) Use default from .env file" >&2
     echo "" >&2
     
-    read -p "Enter choice [1-3]: " -n 1 -r version_choice
+    read -p "Enter choice [1-3]: " -r version_choice
     echo >&2
     
     case "$version_choice" in
@@ -856,7 +856,7 @@ confirm_port_forwarding() {
         echo
         echo "These ports allow your node to connect with other Ethereum nodes."
         echo
-        read -p "Press [C] to change ports or [Enter] to continue: " -n 1 -r choice
+        read -p "Press [C] to change ports or [Enter] to continue: " -r choice
         echo
         
         if [[ "$choice" =~ ^[Cc]$ ]]; then
@@ -928,7 +928,7 @@ install_node() {
     echo "  Consensus: $cons_client (version: $cons_version)"
     echo
 
-    read -p "Proceed with installation? [y/N]: " -n 1 -r
+    read -p "Proceed with installation? [y/n]: " -r
     echo
     [[ ! $REPLY =~ ^[Yy]$ ]] && { echo "Installation cancelled."; press_enter; return; }
 
@@ -986,7 +986,7 @@ install_node() {
     echo "  3) All networks (use with caution) - 0.0.0.0"
     echo
 
-    read -p "Select access level [1-3] (default: 1): " -n 1 -r access_choice
+    read -p "Select access level [1-3] (default: 1): " -r access_choice
     echo
 
     case "$access_choice" in
@@ -994,7 +994,7 @@ install_node() {
             # Get LAN IP
             local lan_ip=$(ip route get 1 | awk '{print $NF;exit}' 2>/dev/null || hostname -I | awk '{print $1}')
             echo "Detected LAN IP: $lan_ip"
-            read -p "Use this IP? [Y/n]: " -n 1 -r
+            read -p "Use this IP? [y/n]: " -r
             echo
             if [[ $REPLY =~ ^[Nn]$ ]]; then
                 read -p "Enter IP address: " lan_ip
@@ -1068,7 +1068,7 @@ install_node() {
     echo
 
     # Ask if user wants to launch the node
-    read -p "Launch node now? [Y/n]: " -n 1 -r
+    read -p "Launch node now? [y/n]: " -r
     echo
 
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -1359,7 +1359,7 @@ remove_nodes_menu() {
         local node_to_remove="${nodes[$((choice-1))]}"
         
         echo -e "\nWill remove: $node_to_remove\n"
-        read -p "Are you sure? This cannot be undone! [y/n]: " -n 1 -r
+        read -p "Are you sure? This cannot be undone! [y/n]: " -r
         echo
         
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -1838,7 +1838,7 @@ update_node() {
                 echo "  - $node"
             done
             echo
-            read -p "Restart all updated nodes to apply changes? [Y/n]: " -n 1 -r
+            read -p "Restart all updated nodes to apply changes? [y/n]: " -r
             echo
             
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -1905,7 +1905,7 @@ update_node() {
         fi
 
         echo
-        read -p "Restart node to apply updates? [Y/n]: " -n 1 -r
+        read -p "Restart node to apply updates? [y/n]: " -r
         echo
 
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -1945,7 +1945,7 @@ main_menu() {
         echo "  Q) Quit"
         echo
         
-        read -p "Select option: " -n 1 -r choice
+        read -p "Select option: " -r choice
         echo
         
         case "$choice" in
@@ -1987,7 +1987,7 @@ update_nodeboi() {
     echo
     echo "This will update NODEBOI to the latest version from GitHub."
     echo
-    read -p "Do you want to continue? (y/n): " -n 1 -r
+    read -p "Do you want to continue? (y/n): " -r
     echo
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
