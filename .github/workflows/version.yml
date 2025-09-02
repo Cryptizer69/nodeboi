@@ -11,7 +11,7 @@ jobs:
     - uses: actions/checkout@v3
       with:
         fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: false
     
     - name: Bump version and create tag
       id: tag_version
@@ -36,4 +36,4 @@ jobs:
         git config --local user.name "GitHub Action"
         git add nodeboi.sh install.sh
         git diff --staged --quiet || git commit -m "Update version to ${{ steps.tag_version.outputs.new_tag }}"
-        git push
+        git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
