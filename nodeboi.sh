@@ -1940,6 +1940,7 @@ main_menu() {
         echo "  3) View detailed status"
         echo "  4) Start/stop nodes"
         echo "  5) Update nodes"
+        echo "  6) Update NODEBOI"
         echo "  Q) Quit"
         echo
         
@@ -1963,10 +1964,7 @@ main_menu() {
                 update_node
                 ;;
             6)
-                toggle_update_check
-                ;;
-            7)
-                monitor_mode
+                update_nodeboi
                 ;;
             [Qq])
                 echo "Exiting..."
@@ -1979,7 +1977,40 @@ main_menu() {
         esac
     done
 }
+
+# Add this new function to handle NODEBOI updates
+update_nodeboi() {
+    clear
+    print_header
+    echo -e "${BOLD}Update NODEBOI${NC}\n==============="
+    echo
+    echo "This will update NODEBOI to the latest version from GitHub."
+    echo
+    read -p "Do you want to continue? (y/n): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo
+        # Run the update script
+        if [[ -f "$HOME/.nodeboi/update.sh" ]]; then
+            bash "$HOME/.nodeboi/update.sh"
+        else
+            echo -e "${RED}[ERROR]${NC} Update script not found at $HOME/.nodeboi/update.sh"
+            echo "You may need to reinstall NODEBOI."
+            press_enter
+        fi
+    else
+        echo "Update cancelled."
+        press_enter
+    fi
+}
+
+# Helper function if not already defined
+press_enter() {
+    echo
+    read -p "Press Enter to continue..."
+}
+
 # Start the application
 check_prerequisites
 main_menu
-
