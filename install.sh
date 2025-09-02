@@ -204,78 +204,23 @@ install_nodeboi() {
     # Create update script
     cat > "$INSTALL_DIR/update.sh" << 'UPDATESCRIPT'
 #!/bin/bash
-
-RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-
 INSTALL_DIR="$HOME/.nodeboi"
 
-echo -e "${CYAN}Checking for NODEBOI updates...${NC}"
-
+echo -e "${CYAN}Updating NODEBOI...${NC}"
 cd "$INSTALL_DIR" || exit 1
 
-# Check if there are local changes
-if [[ -n $(git status --porcelain) ]]; then
-    echo -e "${YELLOW}[WARNING]${NC} You have local changes in the NODEBOI directory:"
-    git status --short
-    echo ""
-    echo "Options:"
-    echo "1) Stash changes and update (recommended)"
-    echo "2) Keep local changes and skip update"
-    echo "3) Discard local changes and update"
-    read -p "Choose option (1-3): " choice
-    
-    case $choice in
-        1)
-            echo "Stashing local changes..."
-            git stash push -m "Auto-stash before update $(date +%Y%m%d_%H%M%S)"
-            git pull origin main
-            echo -e "${YELLOW}Your changes have been stashed. To restore them, run:${NC}"
-            echo "cd $INSTALL_DIR && git stash pop"
-            ;;
-        2)
-            echo "Skipping update to preserve local changes."
-            exit 0
-            ;;
-        3)
-            echo "Discarding local changes..."
-            git reset --hard HEAD
-            git pull origin main
-            ;;
-        *)
-            echo "Invalid option. Update cancelled."
-            exit 1
-            ;;
-    esac
-else
-    # No local changes, safe to pull
-    git pull origin main
-fi
+# Gewoon forceer de update
+git fetch origin
+git reset --hard origin/main
 
-if [[ $? -eq 0 ]]; then
-    echo -e "${GREEN}✓${NC} NODEBOI updated successfully!"
-    
-    # Update docker-compose references to docker compose after update
-    echo "Updating Docker Compose references to v2..."
-    if [[ -f "$INSTALL_DIR/nodeboi.sh" ]]; then
-        sed -i 's/docker-compose/docker compose/g' "$INSTALL_DIR/nodeboi.sh"
-    fi
-    
-    # Check if update script itself was updated
-    if git diff HEAD~1 HEAD --name-only | grep -q "update.sh"; then
-        echo -e "${YELLOW}[INFO]${NC} Update script was modified. Please run update again if needed."
-    fi
-    
-    echo ""
-    read -p "Press Enter to return to menu..."
-else
-    echo -e "${RED}[ERROR]${NC} Update failed. Please check your internet connection and try again."
-    read -p "Press Enter to return to menu..."
-    exit 1
-fi
+# Maak uitvoerbaar
+chmod +x "$INSTALL_DIR/nodeboi.sh"
+
+echo -e "${GREEN}✓${NC} NODEBOI updated to latest version!"
+read -p "Press Enter to continue..."
 UPDATESCRIPT
     
     chmod +x "$INSTALL_DIR/update.sh"
