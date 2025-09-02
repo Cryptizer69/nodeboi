@@ -265,43 +265,43 @@ if [[ $? -eq 0 ]]; then
     
     # Check if update script itself was updated
     if git diff HEAD~1 HEAD --name-only | grep -q "update.sh"; then
-        echo -e "${YELLOW}[INFO]${NC} Update script was modified. Please run 'nodeboi update' again."
+        echo -e "${YELLOW}[INFO]${NC} Update script was modified. Please run update again if needed."
     fi
+    
+    echo ""
+    read -p "Press Enter to return to menu..."
 else
     echo -e "${RED}[ERROR]${NC} Update failed. Please check your internet connection and try again."
+    read -p "Press Enter to return to menu..."
     exit 1
 fi
 UPDATESCRIPT
     
     chmod +x "$INSTALL_DIR/update.sh"
     
-    # Add update command to main script (if not already there)
-    if ! grep -q "update)" "$INSTALL_DIR/nodeboi.sh"; then
-        # Add update case to the main script
-        sed -i '/case "$1" in/a\    update)\n        $HOME/.nodeboi/update.sh\n        exit 0\n        ;;' "$INSTALL_DIR/nodeboi.sh"
-    fi
-    
-    # Success message
-    clear
-    print_nodeboi_art
-    echo -e "${GREEN}${BOLD}✅ NODEBOI installed successfully!${NC}\n"
-    echo -e "${CYAN}Installation location:${NC} $INSTALL_DIR"
-    echo -e "${CYAN}Docker Compose:${NC} v2 (docker compose)"
-    echo -e "${CYAN}Usage:${NC} Just type ${YELLOW}'nodeboi'${NC} from any directory\n"
-    echo -e "${CYAN}Commands:${NC}"
-    echo -e "  ${YELLOW}nodeboi${NC}           - Show dashboard"
-    echo -e "  ${YELLOW}nodeboi install${NC}   - Install a new node"
-    echo -e "  ${YELLOW}nodeboi update${NC}    - Update NODEBOI to latest version"
-    echo -e "  ${YELLOW}nodeboi status${NC}    - Check node status"
-    echo -e "  ${YELLOW}nodeboi help${NC}      - Show all commands\n"
+    # Installation complete message (brief)
+    echo -e "\n${GREEN}✓${NC} NODEBOI installed successfully!"
     
     # Check if user needs to re-login for docker group
-    if groups | grep -q docker; then
-        echo -e "${GREEN}✓${NC} Docker group membership active"
-    else
+    NEED_NEWGRP=false
+    if ! groups | grep -q docker; then
         echo -e "${YELLOW}[IMPORTANT]${NC} You've been added to the docker group."
-        echo -e "Please log out and back in for this to take effect, or run:"
-        echo -e "  ${CYAN}newgrp docker${NC}"
+        echo -e "Running newgrp to activate docker permissions..."
+        NEED_NEWGRP=true
+    fi
+    
+    # Launch NODEBOI directly
+    echo -e "${CYAN}Launching NODEBOI...${NC}\n"
+    sleep 1
+    
+    if [[ "$NEED_NEWGRP" == true ]]; then
+        # Run nodeboi in a new group session
+        exec newgrp docker <<EOF
+nodeboi
+EOF
+    else
+        # Just run nodeboi
+        exec nodeboi
     fi
 }
 
