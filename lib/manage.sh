@@ -679,4 +679,3 @@ manage_node_state() {
 
     press_enter
 }
-floris@Partiboi:~$
