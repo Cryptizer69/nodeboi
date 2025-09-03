@@ -1,5 +1,5 @@
 #!/bin/bash
-# NODEBOI v1.0.17 - Ethereum Node Automation
+# NODEBOI v1.0.18 - Ethereum Node Automation
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
@@ -32,7 +32,7 @@ print_header() {
 EOF
     echo -e "${NC}"
     echo -e "                    ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${YELLOW}v1.0.17${NC}"
+    echo -e "                           ${YELLOW}v1.0.18${NC}"
     echo
 }
 
@@ -444,7 +444,7 @@ get_latest_version() {
             else
                 version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/paradigmxyz/reth/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
             fi
-            [[ -z "$version" ]] && version="v1.0.17"  # Fallback
+            [[ -z "$version" ]] && version="v1.0.18"  # Fallback
             ;;
         besu)
             if [[ -n "$github_token" ]]; then
@@ -468,7 +468,7 @@ get_latest_version() {
             else
                 version=$(curl -sL -H "User-Agent: NODEBOI" --max-time 5 https://api.github.com/repos/ChainSafe/lodestar/releases/latest 2>/dev/null | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -1)
             fi
-            [[ -z "$version" ]] && version="v1.0.17"  # Fallback
+            [[ -z "$version" ]] && version="v1.0.18"  # Fallback
             ;;
         teku)
             if [[ -n "$github_token" ]]; then
@@ -590,7 +590,7 @@ prompt_version() {
             ;;
         2)
             while true; do
-                read -r -p "Enter version (e.g., v1.0.17 or 25.7.0): " selected_version
+                read -r -p "Enter version (e.g., v1.0.18 or 25.7.0): " selected_version
                 
                 if [[ -z "$selected_version" ]]; then
                     echo "Version cannot be empty! Type 'cancel' to skip." >&2
