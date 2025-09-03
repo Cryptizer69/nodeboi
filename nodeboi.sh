@@ -844,8 +844,8 @@ confirm_port_forwarding() {
     local cons_client=$3
     
     # Get the P2P ports from .env
-    local el_p2p=$(grep "EL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
-    local cl_p2p=$(grep "CL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+    local el_p2p=$(grep "EL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2| tr -d '[:space:]')
+    local cl_p2p=$(grep "CL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2| tr -d '[:space:]')
     
     echo -e "\n${CYAN}${BOLD}Port Forwarding Configuration${NC}\n=============================="
     echo -e "${YELLOW}The following P2P ports need to be forwarded on your router:${NC}\n"
