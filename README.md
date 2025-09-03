@@ -28,4 +28,12 @@ wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/install.sh 
 # Run NODEBOI from any directory
 nodeboi
 
+**Modular architecture with minimal code duplication**
+
+## What's New in v0.2.0
+- 📁 **4-file structure** - Clean separation of concerns
+- 🎯 **Centralized client config** - Most client settings in one place
+- 🚫 **~600-800 lines less code** - Removed duplicate functions
+- ⚡ **Easier maintenance** - Logical file organization
+
 
