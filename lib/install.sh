@@ -688,7 +688,11 @@ install_node() {
         echo "  docker compose up -d"
         echo "  docker compose logs -f"
     fi
+    setup_nodeboi_service
 
+    echo
+    echo "[✓] Installation complete."
+    echo "Type 'nodeboi' to start the Nodeboi menu at any time."
     echo
     press_enter
 }
@@ -1007,3 +1011,34 @@ else
     press_enter
 fi
 }
+
+setup_nodeboi_service() {
+    echo "[*] Installing nodeboi systemd service..."
+
+    local service_file="/etc/systemd/system/nodeboi.service"
+
+    sudo tee $service_file > /dev/null <<EOL
+[Unit]
+Description=Nodeboi CLI
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/nodeboi
+Restart=always
+User=$USER
+WorkingDirectory=$HOME
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now nodeboi
+
+    echo "[✓] Nodeboi service installed and running"
+    echo "    Manage with: systemctl status nodeboi | start | stop | restart"
+}
+
+}
+
