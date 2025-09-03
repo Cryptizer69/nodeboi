@@ -2018,7 +2018,8 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         bash "$HOME/.nodeboi/update.sh"
         
         # Get new version from updated file
-        local new_version=$(grep -oP 'SCRIPT_VERSION="\K[^"]+' "$HOME/.nodeboi/nodeboi.sh" 2>/dev/null || echo "unknown")
+        # Replace the new_version detection line with:
+        local new_version=$(head -20 "$HOME/.nodeboi/nodeboi.sh" | grep -m1 "SCRIPT_VERSION=" | sed 's/.*VERSION=["'\'']*\([^"'\'']*\).*/\1/')
         
         if [[ "$current_version" != "$new_version" ]]; then
             echo -e "\n${GREEN}✓ NODEBOI updated from v${current_version} to v${new_version}${NC}"
