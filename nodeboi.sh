@@ -9,10 +9,9 @@ NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
 # Load all library files
 for lib in "${NODEBOI_LIB}"/*.sh; do
-    if [[ -f "$lib" ]]; then
-        source "$lib"
-    fi
+    [[ -f "$lib" ]] && source "$lib"
 done
+
 
 # Colors
 RED='\033[0;31m'
