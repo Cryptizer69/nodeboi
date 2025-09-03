@@ -16,7 +16,6 @@ services:
     stop_grace_period: 5m
     stop_signal: SIGINT
     environment:
-      - JWT_SECRET=${JWT_SECRET}
       - EL_EXTRAS=${EL_EXTRAS:-}
       - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-false}
       - MINIMAL_NODE=${EL_MINIMAL_NODE:-false}
