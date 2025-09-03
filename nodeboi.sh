@@ -544,20 +544,18 @@ prompt_version() {
                     echo "Using version: $selected_version" >&2
                 else
                     echo -e "${YELLOW}⚠ Warning: Docker image not yet available${NC}" >&2
-                    echo "This release was recently published and the Docker image is still building." >&2
+                    echo "This release was just published. The Docker image is still being built." >&2
+                    echo "This typically takes 1-4 hours after a GitHub release." >&2
                     echo "" >&2
                     echo "Options:" >&2
-                    echo "  1) Use it anyway (will need to wait before starting node)" >&2
-                    echo "  2) Choose a different version" >&2
-                    echo "  3) Use default from .env" >&2
+                    echo "  1) Choose a different version" >&2
+                    echo "  2) Skip updating this client (keep current)" >&2
                     echo "" >&2
                     
-                    read -p "Enter choice [1-3]: " -r fallback_choice
+                    read -p "Enter choice [1-2]: " -r fallback_choice
                     case "$fallback_choice" in
                         1)
-                            echo "Using $selected_version (Docker image pending)" >&2
-                            ;;
-                        2)
+                            echo "" >&2
                             echo "Enter a different version:" >&2
                             while true; do
                                 read -r -p "Version: " selected_version
@@ -566,23 +564,25 @@ prompt_version() {
                                     continue
                                 fi
                                 
+                                if [[ "$selected_version" == "skip" ]] || [[ "$selected_version" == "cancel" ]]; then
+                                    selected_version=""
+                                    echo "Skipping update for $client_type" >&2
+                                    break
+                                fi
+                                
                                 echo "Validating version $selected_version..." >&2
                                 if validate_client_version "$client_type" "$selected_version"; then
                                     echo -e "${GREEN}✓ Version validated successfully${NC}" >&2
                                     break
                                 else
                                     echo -e "${RED}Version $selected_version not available${NC}" >&2
-                                    echo "Try again or enter 'skip' to use .env default" >&2
-                                    if [[ "$selected_version" == "skip" ]]; then
-                                        selected_version=""
-                                        break
-                                    fi
+                                    echo "Try another version or type 'skip' to cancel" >&2
                                 fi
                             done
                             ;;
                         *)
                             selected_version=""
-                            echo "Using default version from .env file" >&2
+                            echo "Skipping update for $client_type" >&2
                             ;;
                     esac
                 fi
@@ -590,11 +590,17 @@ prompt_version() {
             ;;
         2)
             while true; do
-                read -r -p "Enter version (e.g., v1.0.13 or 25.7.0): " selected_version
+                read -r -p "Enter version (e.g., v1.0.10 or 25.7.0): " selected_version
                 
                 if [[ -z "$selected_version" ]]; then
-                    echo "Version cannot be empty! Try again." >&2
+                    echo "Version cannot be empty! Type 'cancel' to skip." >&2
                     continue
+                fi
+                
+                if [[ "$selected_version" == "cancel" ]] || [[ "$selected_version" == "skip" ]]; then
+                    selected_version=""
+                    echo "Using default version from .env file" >&2
+                    break
                 fi
                 
                 echo "Validating version $selected_version..." >&2
@@ -649,7 +655,6 @@ prompt_version() {
     # Only this goes to stdout (gets captured)
     echo "$selected_version"
 }
-
 update_client_version() {
     local node_dir=$1
     local client=$2
