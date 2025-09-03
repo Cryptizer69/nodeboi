@@ -137,7 +137,7 @@ prompt_version() {
             ;;
         2)
             while true; do
-                read -r -p "Enter version (e.g., v2.0.3 or 25.7.0): " selected_version
+                read -r -p "Enter version (e.g., v2.0.4 or 25.7.0): " selected_version
 
                 if [[ -z "$selected_version" ]]; then
                     echo "Version cannot be empty! Type 'cancel' to skip." >&2
