@@ -1751,6 +1751,7 @@ manage_node_state() {
 # SECTION 12: UPDATE MANAGEMENT
 #==============================================================================
 update_node() {
+    trap 'echo -e "\n${YELLOW}Update cancelled${NC}"; press_enter; return' INT
     echo -e "\n${CYAN}${BOLD}Update Node${NC}\n===========\n"
 
     # List existing nodes
@@ -1938,6 +1939,10 @@ update_node() {
     fi
 
     press_enter
+    
+    # Clear the trap when done
+    trap - INT
+    
 }
 #==============================================================================
 # SECTION 13: MAIN MENU
