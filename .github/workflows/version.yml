@@ -30,7 +30,7 @@ jobs:
     
     - name: Update files
       run: |
-        sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/${{ steps.bump.outputs.new }}/g" nodeboi.sh install.sh
+        sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/${{ steps.bump.outputs.new }}/g" nodeboi.sh lib/install.sh
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
         git add -A
