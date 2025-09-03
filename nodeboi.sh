@@ -1,5 +1,5 @@
 #!/bin/bash
-# NODEBOI v2.0.0 - Clean 4-file structure
+# NODEBOI v2.0.1 - Clean 4-file structure
 
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
@@ -30,7 +30,7 @@ print_header() {
 HEADER
     echo -e "${NC}"
     echo -e "                    ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${YELLOW}v2.0.0${NC}"
+    echo -e "                           ${YELLOW}v2.0.1${NC}"
     echo
 }
 
@@ -120,8 +120,8 @@ case "$1" in
         echo "Testing functions:"
         echo -n "  Docker image for teku: "
         get_docker_image "teku"
-        echo -n "  Normalize version v24.10.3 for teku: "
-        normalize_version "teku" "v24.10.3"
+        echo -n "  Normalize version v2.0.1 for teku: "
+        normalize_version "teku" "v2.0.1"
         echo ""
         echo "All systems operational!"
         ;;
