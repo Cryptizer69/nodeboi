@@ -7,6 +7,13 @@ SCRIPT_VERSION="0.1.19"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
+# Load all library files
+for lib in "${NODEBOI_LIB}"/*.sh; do
+    if [[ -f "$lib" ]]; then
+        source "$lib"
+    fi
+done
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,11 +45,6 @@ press_enter() {
     echo
     read -p "Press Enter to continue..."
 }
-
-# Load all library files
-for lib in "${NODEBOI_LIB}"/*.sh; do
-    source "$lib"
-done
 
 # Main menu
 main_menu() {
