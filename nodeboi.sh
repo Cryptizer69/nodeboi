@@ -992,7 +992,7 @@ install_node() {
     case "$access_choice" in
         2)
             # Get LAN IP
-            local lan_ip=$(ip route get 1 | awk '{print $NF;exit}' 2>/dev/null || hostname -I | awk '{print $1}')
+            local lan_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
             echo "Detected LAN IP: $lan_ip"
             read -p "Use this IP? [y/n]: " -r
             echo
@@ -1618,11 +1618,19 @@ show_detailed_status() {
                     echo "  Status: ${RED}Stopped${NC}"
                 fi
             fi
+
+        # Get P2P ports
+            local el_p2p=$(grep "EL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2)
+            local cl_p2p=$(grep "CL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2)
             
             echo "  Endpoints:"
             echo "    Execution RPC:  http://localhost:${el_rpc}"
-            echo "    Execution WS:   ws://localhost:${el_ws}"
+            echo "    Execution WS:   ws://localhost:${el_ws}"  
             echo "    Consensus REST: http://localhost:${cl_rest}"
+            echo ""
+            echo "  P2P Ports (need to be forwarded in your router):"
+            echo "    Execution P2P:  ${el_p2p}/TCP+UDP"
+            echo "    Consensus P2P:  ${cl_p2p}/TCP+UDP"
         fi
     done
     
