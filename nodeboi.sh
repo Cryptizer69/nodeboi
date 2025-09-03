@@ -529,18 +529,68 @@ prompt_version() {
             echo "Fetching latest version..." >&2
             selected_version=$(get_latest_version "$client_type" 2>/dev/null)
             if [[ -z "$selected_version" ]]; then
-                echo "Could not fetch latest version" >&2
+                echo "Could not fetch latest version from GitHub" >&2
                 while [[ -z "$selected_version" ]]; do
                     read -r -p "Enter version manually: " selected_version
                     [[ -z "$selected_version" ]] && echo "Version cannot be empty!" >&2
                 done
             else
-                echo "Using version: $selected_version" >&2
+                echo "Latest version from GitHub: $selected_version" >&2
+                
+                # Validate Docker image availability immediately
+                echo "Checking Docker Hub availability..." >&2
+                if validate_client_version "$client_type" "$selected_version"; then
+                    echo -e "${GREEN}✓ Docker image is available${NC}" >&2
+                    echo "Using version: $selected_version" >&2
+                else
+                    echo -e "${YELLOW}⚠ Warning: Docker image not yet available${NC}" >&2
+                    echo "This release was recently published and the Docker image is still building." >&2
+                    echo "" >&2
+                    echo "Options:" >&2
+                    echo "  1) Use it anyway (will need to wait before starting node)" >&2
+                    echo "  2) Choose a different version" >&2
+                    echo "  3) Use default from .env" >&2
+                    echo "" >&2
+                    
+                    read -p "Enter choice [1-3]: " -r fallback_choice
+                    case "$fallback_choice" in
+                        1)
+                            echo "Using $selected_version (Docker image pending)" >&2
+                            ;;
+                        2)
+                            echo "Enter a different version:" >&2
+                            while true; do
+                                read -r -p "Version: " selected_version
+                                if [[ -z "$selected_version" ]]; then
+                                    echo "Version cannot be empty!" >&2
+                                    continue
+                                fi
+                                
+                                echo "Validating version $selected_version..." >&2
+                                if validate_client_version "$client_type" "$selected_version"; then
+                                    echo -e "${GREEN}✓ Version validated successfully${NC}" >&2
+                                    break
+                                else
+                                    echo -e "${RED}Version $selected_version not available${NC}" >&2
+                                    echo "Try again or enter 'skip' to use .env default" >&2
+                                    if [[ "$selected_version" == "skip" ]]; then
+                                        selected_version=""
+                                        break
+                                    fi
+                                fi
+                            done
+                            ;;
+                        *)
+                            selected_version=""
+                            echo "Using default version from .env file" >&2
+                            ;;
+                    esac
+                fi
             fi
             ;;
         2)
             while true; do
-                read -r -p "Enter version (e.g., v1.0.11 or 25.7.0): " selected_version
+                read -r -p "Enter version (e.g., v1.0.10 or 25.7.0): " selected_version
                 
                 if [[ -z "$selected_version" ]]; then
                     echo "Version cannot be empty! Try again." >&2
@@ -549,10 +599,10 @@ prompt_version() {
                 
                 echo "Validating version $selected_version..." >&2
                 if validate_client_version "$client_type" "$selected_version"; then
-                    echo "Version validated successfully" >&2
+                    echo -e "${GREEN}✓ Version validated successfully${NC}" >&2
                     break
                 else
-                    echo -e "${RED}Error: Version $selected_version not found for $client_type${NC}" >&2
+                    echo -e "${RED}Error: Docker image ${client_type}:${selected_version} not found${NC}" >&2
                     echo "Please check available versions at:" >&2
                     case "$client_type" in
                         reth) echo "  https://github.com/paradigmxyz/reth/releases" >&2 ;;
@@ -562,7 +612,13 @@ prompt_version() {
                         teku) echo "  https://github.com/Consensys/teku/releases" >&2 ;;
                         grandine) echo "  https://github.com/grandinetech/grandine/releases" >&2 ;;
                     esac
-                    echo "Try again or press Ctrl+C to cancel" >&2
+                    echo "" >&2
+                    read -p "Try again? [y/n]: " -r try_again
+                    if [[ ! $try_again =~ ^[Yy]$ ]]; then
+                        selected_version=""
+                        echo "Using default version from .env file" >&2
+                        break
+                    fi
                 fi
             done
             ;;
@@ -571,7 +627,7 @@ prompt_version() {
             echo "Using default version from .env file" >&2
             ;;
         *)
-            echo "Invalid choice, using default" >&2
+            echo "Invalid choice, using default from .env" >&2
             selected_version=""
             ;;
     esac
@@ -904,21 +960,23 @@ install_node() {
     local cons_version=$(prompt_version "$cons_client" "consensus")
 
     # Validate versions exist
-    echo "Validating client versions..."
-    if ! validate_client_version "$exec_client" "$exec_version"; then
-        echo -e "${RED}Error: Version $exec_version not found for $exec_client${NC}"
-        echo -e "${YELLOW}Check available versions at:${NC}"
-        get_release_url "$exec_client"
-        press_enter
-        return
-    fi
+    echo "Validating Docker images..."
     
-    if ! validate_client_version "$cons_client" "$cons_version"; then
-        echo -e "${RED}Error: Version $cons_version not found for $cons_client${NC}"
-        echo -e "${YELLOW}Check available versions at:${NC}"
-        get_release_url "$cons_client"
-        press_enter
-        return
+    if [[ -n "$exec_version" ]] || [[ -n "$cons_version" ]]; then
+        if ! validate_update_images "$HOME/$node_name" "$exec_client" "$exec_version" "$cons_client" "$cons_version"; then
+            echo -e "${YELLOW}Warning: Some Docker images are not available yet.${NC}"
+            echo "This might be because:"
+            echo "  - The release is very new (images still building)"
+            echo "  - Version number might be incorrect"
+            echo ""
+            read -p "Do you want to continue anyway? [y/n]: " -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "Installation cancelled. Try again with different versions."
+                press_enter
+                return
+            fi
+        fi
     fi
 
     echo -e "\n${BOLD}Configuration Summary${NC}\n===================="
@@ -1210,7 +1268,7 @@ validate_client_version() {
         nethermind) docker_image="nethermind/nethermind" ;;
         lodestar) docker_image="chainsafe/lodestar" ;;
         teku) docker_image="consensys/teku" ;;
-        grandine) docker_image="sifrai/grandine" ;;  # Correct Docker Hub repo
+        grandine) docker_image="sifrai/grandine" ;;
         *) 
             echo "Unknown client: $client" >&2
             return 1
@@ -1223,28 +1281,99 @@ validate_client_version() {
         return 0
     fi
     
-    # Try the version as-is first
     echo "Checking Docker Hub for ${docker_image}:${version}..." >&2
-    if docker manifest inspect "${docker_image}:${version}" >/dev/null 2>&1; then
-        return 0
+    
+    # Try multiple version formats
+    local versions_to_try=()
+    
+    # Add the version as-is
+    versions_to_try+=("$version")
+    
+    # Add with/without v prefix variants
+    if [[ "$version" == v* ]]; then
+        versions_to_try+=("${version#v}")  # Remove v
+    else
+        versions_to_try+=("v${version}")   # Add v
     fi
     
-    # If it starts with v, try without
-    if [[ "$version" == v* ]]; then
-        local version_no_v="${version#v}"
-        echo "Trying without v prefix: ${version_no_v}..." >&2
-        if docker manifest inspect "${docker_image}:${version_no_v}" >/dev/null 2>&1; then
+    # Check each possible version
+    for test_version in "${versions_to_try[@]}"; do
+        if docker manifest inspect "${docker_image}:${test_version}" >/dev/null 2>&1; then
+            echo "✓ Found as ${docker_image}:${test_version}" >&2
+            # Update the version to the working format
+            if [[ "$test_version" != "$version" ]]; then
+                echo "Note: Using version format '${test_version}' instead of '${version}'" >&2
+            fi
             return 0
         fi
-    else
-        # If it doesn't start with v, try with v
-        echo "Trying with v prefix: v${version}..." >&2
-        if docker manifest inspect "${docker_image}:v${version}" >/dev/null 2>&1; then
-            return 0
-        fi
+    done
+    
+    # If we get here, no version worked
+    echo "✗ Image not found: ${docker_image}:${version}" >&2
+    echo "  The Docker image might still be building after a recent release." >&2
+    echo "  Try again in a few hours or use a different version." >&2
+    
+    # Suggest alternative versions
+    echo "" >&2
+    echo "Checking for available versions..." >&2
+    local available=$(docker run --rm curlimages/curl -s "https://hub.docker.com/v2/repositories/${docker_image#*/}/tags/?page_size=5" 2>/dev/null | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//g' | head -5 | tr '\n' ' ')
+    
+    if [[ -n "$available" ]]; then
+        echo "Recent available versions: $available" >&2
     fi
     
     return 1
+}
+
+# Pre-flight check for updates - verify all images exist before applying
+validate_update_images() {
+    local node_dir=$1
+    local exec_client=$2
+    local exec_version=$3
+    local cons_client=$4
+    local cons_version=$5
+    
+    local all_valid=true
+    
+    echo "Performing pre-flight checks..." >&2
+    echo "================================" >&2
+    
+    # Check execution client if version specified
+    if [[ -n "$exec_version" ]]; then
+        echo -n "Checking $exec_client $exec_version... " >&2
+        if validate_client_version "$exec_client" "$exec_version"; then
+            echo "✓" >&2
+        else
+            echo "✗ - Image not available" >&2
+            all_valid=false
+        fi
+    fi
+    
+    # Check consensus client if version specified  
+    if [[ -n "$cons_version" ]]; then
+        echo -n "Checking $cons_client $cons_version... " >&2
+        if validate_client_version "$cons_client" "$cons_version"; then
+            echo "✓" >&2
+        else
+            echo "✗ - Image not available" >&2
+            all_valid=false
+        fi
+    fi
+    
+    if [[ "$all_valid" == false ]]; then
+        echo "" >&2
+        echo "⚠️  Some Docker images are not available yet." >&2
+        echo "This often happens with brand new releases." >&2
+        echo "" >&2
+        echo "Options:" >&2
+        echo "1) Wait a few hours and try again" >&2
+        echo "2) Use different versions" >&2
+        echo "3) Check Docker Hub for available versions" >&2
+        return 1
+    fi
+    
+    echo "✓ All Docker images validated successfully!" >&2
+    return 0
 }
 
 # Helper function to get release URL (add to Section 5)
@@ -1763,6 +1892,7 @@ update_node() {
     if [[ ${#nodes[@]} -eq 0 ]]; then
         echo "No nodes found to update."
         press_enter
+        trap - INT
         return
     fi
 
@@ -1788,7 +1918,11 @@ update_node() {
 
     read -p "Enter choice: " choice
 
-    [[ "${choice^^}" == "C" ]] && { echo "Update cancelled."; return; }
+    [[ "${choice^^}" == "C" ]] && { 
+        echo "Update cancelled."
+        trap - INT
+        return
+    }
 
     #---------------------------------------------------------------------------
     # Handle "Update all" option
@@ -1797,6 +1931,7 @@ update_node() {
         echo -e "\n${BOLD}Updating all nodes...${NC}\n"
         
         local nodes_to_restart=()
+        local nodes_with_pending=()
         
         for node_name in "${nodes[@]}"; do
             echo -e "\n${CYAN}Updating $node_name...${NC}"
@@ -1805,28 +1940,35 @@ update_node() {
             # Get current client info
             local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" | cut -d'=' -f2)
             
-            # Check execution client
+            # Detect clients
             local exec_client=""
             [[ "$compose_file" == *"reth.yml"* ]] && exec_client="reth"
             [[ "$compose_file" == *"besu.yml"* ]] && exec_client="besu"
             [[ "$compose_file" == *"nethermind.yml"* ]] && exec_client="nethermind"
             
-            # Check consensus client
             local cons_client=""
             [[ "$compose_file" == *"lodestar"* ]] && cons_client="lodestar"
             [[ "$compose_file" == *"teku"* ]] && cons_client="teku"
             [[ "$compose_file" == *"grandine"* ]] && cons_client="grandine"
             
             local updated=false
+            local has_pending=false
             
             # Update execution client
             if [[ -n "$exec_client" ]]; then
                 echo "Execution client: $exec_client"
                 local exec_version=$(prompt_version "$exec_client" "execution")
                 if [[ -n "$exec_version" ]]; then
-                    update_client_version "$node_dir" "$exec_client" "$exec_version"
-                    echo "  Updated to version: $exec_version"
-                    updated=true
+                    # Validate before applying
+                    if validate_client_version "$exec_client" "$exec_version"; then
+                        update_client_version "$node_dir" "$exec_client" "$exec_version"
+                        echo "  ✓ Updated to version: $exec_version"
+                        updated=true
+                    else
+                        echo "  ⚠ Version $exec_version selected but Docker image not available yet"
+                        echo "    Config NOT updated. Wait for Docker image or choose different version."
+                        has_pending=true
+                    fi
                 fi
             fi
             
@@ -1835,24 +1977,51 @@ update_node() {
                 echo "Consensus client: $cons_client"
                 local cons_version=$(prompt_version "$cons_client" "consensus")
                 if [[ -n "$cons_version" ]]; then
-                    update_client_version "$node_dir" "$cons_client" "$cons_version"
-                    echo "  Updated to version: $cons_version"
-                    updated=true
+                    # Validate before applying
+                    if validate_client_version "$cons_client" "$cons_version"; then
+                        update_client_version "$node_dir" "$cons_client" "$cons_version"
+                        echo "  ✓ Updated to version: $cons_version"
+                        updated=true
+                    else
+                        echo "  ⚠ Version $cons_version selected but Docker image not available yet"
+                        echo "    Config NOT updated. Wait for Docker image or choose different version."
+                        has_pending=true
+                    fi
                 fi
             fi
             
-            [[ "$updated" == true ]] && nodes_to_restart+=("$node_name")
+            if [[ "$updated" == true ]]; then
+                nodes_to_restart+=("$node_name")
+            fi
+            
+            if [[ "$has_pending" == true ]]; then
+                nodes_with_pending+=("$node_name")
+            fi
         done
         
-        # Restart all updated nodes if any
+        # Show summary
+        echo
+        echo "─────────────────────────────"
+        echo -e "${BOLD}Update Summary:${NC}"
+        
+        if [[ ${#nodes_to_restart[@]} -gt 0 ]]; then
+            echo -e "${GREEN}Successfully updated:${NC}"
+            for node in "${nodes_to_restart[@]}"; do
+                echo "  ✓ $node"
+            done
+        fi
+        
+        if [[ ${#nodes_with_pending[@]} -gt 0 ]]; then
+            echo -e "${YELLOW}Pending (Docker images not available):${NC}"
+            for node in "${nodes_with_pending[@]}"; do
+                echo "  ⚠ $node"
+            done
+        fi
+        
+        # Restart updated nodes if any
         if [[ ${#nodes_to_restart[@]} -gt 0 ]]; then
             echo
-            echo "The following nodes have updates:"
-            for node in "${nodes_to_restart[@]}"; do
-                echo "  - $node"
-            done
-            echo
-            read -p "Restart all updated nodes to apply changes? [y/n]: " -r
+            read -p "Restart updated nodes to apply changes? [y/n]: " -r
             echo
             
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -1860,18 +2029,21 @@ update_node() {
                     echo "Restarting $node_name..."
                     cd "$HOME/$node_name"
                     safe_docker_stop "$node_name"
+                    echo "Pulling new images..."
                     docker compose pull
                     docker compose up -d
                 done
-                echo -e "\n${GREEN}✓ All nodes updated and restarted${NC}"
+                echo -e "\n${GREEN}✓ All updated nodes restarted${NC}"
             else
-                echo "Nodes updated. Restart manually to apply changes:"
+                echo "Nodes updated but not restarted. To apply changes manually:"
                 for node_name in "${nodes_to_restart[@]}"; do
-                    echo "  cd $HOME/$node_name && safe_docker_stop $node_name && docker compose pull && docker compose up -d"
+                    echo "  cd $HOME/$node_name && docker compose down && docker compose pull && docker compose up -d"
                 done
             fi
         else
-            echo -e "\n${YELLOW}No updates were applied.${NC}"
+            if [[ ${#nodes_with_pending[@]} -eq 0 ]]; then
+                echo -e "\n${YELLOW}No updates were applied.${NC}"
+            fi
         fi
         
     #---------------------------------------------------------------------------
@@ -1886,53 +2058,89 @@ update_node() {
         # Get current client info
         local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" | cut -d'=' -f2)
 
-        # Check execution client
+        # Detect clients
         local exec_client=""
         [[ "$compose_file" == *"reth.yml"* ]] && exec_client="reth"
         [[ "$compose_file" == *"besu.yml"* ]] && exec_client="besu"
         [[ "$compose_file" == *"nethermind.yml"* ]] && exec_client="nethermind"
 
-        # Check consensus client
         local cons_client=""
         [[ "$compose_file" == *"lodestar"* ]] && cons_client="lodestar"
         [[ "$compose_file" == *"teku"* ]] && cons_client="teku"
         [[ "$compose_file" == *"grandine"* ]] && cons_client="grandine"
 
+        local exec_version=""
+        local cons_version=""
+        local updates_applied=false
+        local updates_pending=false
+
         # Update execution client
         if [[ -n "$exec_client" ]]; then
             echo "Execution client: $exec_client"
-            local exec_version=$(prompt_version "$exec_client" "execution")
+            exec_version=$(prompt_version "$exec_client" "execution")
             if [[ -n "$exec_version" ]]; then
-                update_client_version "$node_dir" "$exec_client" "$exec_version"
-                echo "  Updated to version: $exec_version"
+                if validate_client_version "$exec_client" "$exec_version"; then
+                    update_client_version "$node_dir" "$exec_client" "$exec_version"
+                    echo -e "  ${GREEN}✓ Updated to version: $exec_version${NC}"
+                    updates_applied=true
+                else
+                    echo -e "  ${YELLOW}⚠ Version $exec_version not available on Docker Hub yet${NC}"
+                    echo "    Configuration NOT updated. Image may still be building."
+                    updates_pending=true
+                fi
             fi
         fi
 
         # Update consensus client
         if [[ -n "$cons_client" ]]; then
             echo "Consensus client: $cons_client"
-            local cons_version=$(prompt_version "$cons_client" "consensus")
+            cons_version=$(prompt_version "$cons_client" "consensus")
             if [[ -n "$cons_version" ]]; then
-                update_client_version "$node_dir" "$cons_client" "$cons_version"
-                echo "  Updated to version: $cons_version"
+                if validate_client_version "$cons_client" "$cons_version"; then
+                    update_client_version "$node_dir" "$cons_client" "$cons_version"
+                    echo -e "  ${GREEN}✓ Updated to version: $cons_version${NC}"
+                    updates_applied=true
+                else
+                    echo -e "  ${YELLOW}⚠ Version $cons_version not available on Docker Hub yet${NC}"
+                    echo "    Configuration NOT updated. Image may still be building."
+                    updates_pending=true
+                fi
             fi
         fi
 
-        echo
-        read -p "Restart node to apply updates? [y/n]: " -r
-        echo
+        # Handle results
+        if [[ "$updates_applied" == true ]]; then
+            echo
+            echo -e "${GREEN}✓ Updates validated and applied${NC}"
+            echo
+            read -p "Restart node to apply updates? [y/n]: " -r
+            echo
 
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            echo "Restarting $node_name..."
-            cd "$node_dir"
-            safe_docker_stop "$node_name"
-            docker compose pull
-            docker compose up -d
-            echo -e "${GREEN}✓ Node updated and restarted${NC}"
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                echo "Stopping $node_name..."
+                cd "$node_dir"
+                safe_docker_stop "$node_name"
+                echo "Pulling new images..."
+                docker compose pull
+                echo "Starting $node_name..."
+                docker compose up -d
+                echo -e "${GREEN}✓ Node updated and restarted${NC}"
+            else
+                echo "Node updated but not restarted. To apply changes:"
+                echo "  cd $node_dir"
+                echo "  docker compose down && docker compose pull && docker compose up -d"
+            fi
+        elif [[ "$updates_pending" == true ]]; then
+            echo
+            echo -e "${YELLOW}No updates were applied.${NC}"
+            echo "Selected versions are not available on Docker Hub yet."
+            echo "Options:"
+            echo "  1) Wait a few hours for Docker images to be built"
+            echo "  2) Run update again with different versions"
+            echo "  3) Check Docker Hub for available versions"
         else
-            echo "Node updated. Restart manually to apply changes:"
-            echo "  cd $node_dir"
-            echo "  safe_docker_stop $node_name && docker compose pull && docker compose up -d"
+            echo
+            echo "No changes made (using existing versions)."
         fi
     else
         echo "Invalid selection."
@@ -1942,7 +2150,6 @@ update_node() {
     
     # Clear the trap when done
     trap - INT
-    
 }
 #==============================================================================
 # SECTION 13: MAIN MENU
@@ -2047,6 +2254,21 @@ press_enter() {
     echo
     read -p "Press Enter to continue..."
 }
+
+# Quick validation test (can be called directly)
+if [[ "$1" == "check-image" ]]; then
+    shift
+    client="${1:-teku}"
+    version="${2:-25.9.1}"
+    echo "Testing Docker image availability for $client:$version"
+    if validate_client_version "$client" "$version"; then
+        echo "✓ Image is available!"
+        exit 0
+    else
+        echo "✗ Image not found"
+        exit 1
+    fi
+fi
 
 # Start the application
 check_prerequisites
