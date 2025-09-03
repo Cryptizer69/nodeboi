@@ -120,8 +120,8 @@ case "$1" in
         echo "Testing functions:"
         echo -n "  Docker image for teku: "
         get_docker_image "teku"
-        echo -n "  Normalize version v2.0.12 for teku: "
-        normalize_version "teku" "v2.0.12"
+        echo -n "  Normalize version v2.0.13 for teku: "
+        normalize_version "teku" "v2.0.13"
         echo ""
         echo "All systems operational!"
         ;;
