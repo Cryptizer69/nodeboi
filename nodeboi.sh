@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="0.0.19"
+SCRIPT_VERSION="0.1.19"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -29,7 +29,8 @@ print_header() {
 HEADER
     echo -e "${NC}"
     echo -e "                    ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${YELLOW}v2.0.11${NC}"
+    echo -e "                           ${YELLOW}v${SCRIPT_VERSION}${NC}"
+
     echo
 }
 
