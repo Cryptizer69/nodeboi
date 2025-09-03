@@ -11,13 +11,13 @@ jobs:
       contents: write
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Get current version
       id: get_version
       run: |
-        VERSION=$(grep -oP 'v\d+\.\d+\.\d+' nodeboi.sh | head -1)
+        VERSION=$(grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+' nodeboi.sh | head -1)
         echo "current=$VERSION" >> $GITHUB_OUTPUT
-    
+
     - name: Bump version
       id: bump
       run: |
@@ -27,12 +27,29 @@ jobs:
         patch=$((patch + 1))
         NEW_VERSION="v${major}.${minor}.${patch}"
         echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
-    
+
     - name: Update files
       run: |
-        sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/${{ steps.bump.outputs.new }}/g" nodeboi.sh lib/install.sh
+        sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/${{ steps.bump.outputs.new }}/g" nodeboi.sh install.sh
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
         git add -A
         git commit -m "Bump version to ${{ steps.bump.outputs.new }}"
         git push
+
+    - name: Create archive
+      run: |
+        tar -czf nodeboi.tar.gz *
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.bump.outputs.new }}
+        name: Release ${{ steps.bump.outputs.new }}
+        body: |
+          Automated release of version ${{ steps.bump.outputs.new }}.
+          Run with:
+          ```bash
+          wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/install.sh | bash
+          ```
+        files: nodeboi.tar.gz
