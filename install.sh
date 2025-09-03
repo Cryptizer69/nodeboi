@@ -11,7 +11,7 @@ PINK='\033[38;5;213m'
 
 REPO_URL="https://github.com/Cryptizer69/nodeboi.git"
 INSTALL_DIR="$HOME/.nodeboi"
-SCRIPT_VERSION="v1.0.3"
+SCRIPT_VERSION="v1.0.4"
 
 # ASCII Art function
 print_nodeboi_art() {
