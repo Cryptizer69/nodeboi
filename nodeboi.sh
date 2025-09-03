@@ -1062,9 +1062,7 @@ install_node() {
     echo -e "\n${GREEN}${BOLD}✓ Installation Complete!${NC}\n"
     echo "Node installed at: $node_dir"
     echo
-    echo -e "${YELLOW}Remember to forward these ports on your router:${NC}"
-    echo "  • Port $el_p2p (TCP+UDP) for $exec_client"
-    echo "  • Port $cl_p2p (TCP+UDP) for $cons_client"
+    echo -e "${YELLOW}Don't forget to forward the necessary ports. You can always find them under option \"[3] View node details\" in the main menu.${NC}"
     echo
 
     # Ask if user wants to launch the node
@@ -1565,7 +1563,7 @@ print_dashboard() {
     fi
 }
 
-show_detailed_status() {
+show_node_details() {
     echo -e "\n${CYAN}${BOLD}Detailed Node Status${NC}\n===================="
     
     for dir in "$HOME"/ethnode*; do
@@ -1620,17 +1618,16 @@ show_detailed_status() {
             fi
 
         # Get P2P ports
-            local el_p2p=$(grep "EL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2)
-            local cl_p2p=$(grep "CL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2)
+            local el_p2p=$(grep "EL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+            local cl_p2p=$(grep "CL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
             
             echo "  Endpoints:"
             echo "    Execution RPC:  http://localhost:${el_rpc}"
             echo "    Execution WS:   ws://localhost:${el_ws}"  
             echo "    Consensus REST: http://localhost:${cl_rest}"
-            echo ""
             echo "  P2P Ports (need to be forwarded in your router):"
-            echo "    Execution P2P:  ${el_p2p}/TCP+UDP"
-            echo "    Consensus P2P:  ${cl_p2p}/TCP+UDP"
+            echo -e "    Execution P2P:  ${YELLOW}${el_p2p}${NC}/TCP+UDP"
+            echo -e "    Consensus P2P:  ${YELLOW}${cl_p2p}${NC}/TCP+UDP"
         fi
     done
     
@@ -1946,7 +1943,7 @@ main_menu() {
         echo -e "${BOLD}Main Menu${NC}\n=========="
         echo "  1) Install new node"
         echo "  2) Remove node"
-        echo "  3) View detailed status"
+        echo "  3) View node details"
         echo "  4) Start/stop nodes"
         echo "  5) Update nodes"
         echo "  6) Update NODEBOI"
@@ -1964,7 +1961,7 @@ main_menu() {
                 remove_nodes_menu
                 ;;
             3)
-                show_detailed_status
+                show_node_details
                 ;;
             4)
                 start_stop_menu
