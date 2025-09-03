@@ -3,6 +3,15 @@
 
 INSTALL_DIR="$HOME/.nodeboi"
 
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+    echo "[*] Updating existing Nodeboi installation..."
+    git -C "$INSTALL_DIR" pull --ff-only
+else
+    echo "[*] Fresh install of Nodeboi..."
+    rm -rf "$INSTALL_DIR"
+    git clone https://github.com/Cryptizer69/nodeboi "$INSTALL_DIR"
+fi
+
 # Helper: get next available node instance number
 get_next_instance_number() {
     local num=1
