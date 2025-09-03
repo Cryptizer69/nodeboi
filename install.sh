@@ -1,5 +1,5 @@
 #!/bin/bash
-# lib/install.sh - Installation and update functions
+# install.sh - Installation and update functions
 INSTALL_DIR="$HOME/.nodeboi"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
@@ -11,6 +11,10 @@ else
     git clone https://github.com/Cryptizer69/nodeboi "$INSTALL_DIR"
 fi
 
+# Fix permissions
+chmod +x "$INSTALL_DIR/nodeboi.sh"
+chmod -R u+x "$INSTALL_DIR/lib"/*.sh
+
 # Maak wrapper script in /usr/local/bin
 sudo tee /usr/local/bin/nodeboi > /dev/null <<'EOL'
 #!/bin/bash
@@ -18,7 +22,6 @@ exec "$HOME/.nodeboi/nodeboi.sh" "$@"
 EOL
 
 sudo chmod +x /usr/local/bin/nodeboi
-
 # Helper function
 get_next_instance_number() {
     local num=1
@@ -1027,9 +1030,20 @@ else
 fi
 }
 
-setup_nodeboi_service() {
-    echo "[*] Installing nodeboi systemd service..."
+# Fix permissions
+chmod +x "$INSTALL_DIR/nodeboi.sh"
+chmod -R u+x "$INSTALL_DIR/lib"/*.sh
 
+# Create wrapper script in /usr/local/bin
+sudo tee /usr/local/bin/nodeboi > /dev/null <<'EOL'
+#!/bin/bash
+exec "$HOME/.nodeboi/nodeboi.sh" "$@"
+EOL
+
+sudo chmod +x /usr/local/bin/nodeboi
+
+# Define systemd service function
+setup_nodeboi_service() {
     local service_file="/etc/systemd/system/nodeboi.service"
 
     sudo tee $service_file > /dev/null <<EOL
@@ -1038,10 +1052,10 @@ Description=Nodeboi CLI
 After=network.target
 
 [Service]
-ExecStart=%h/.nodeboi/nodeboi
+ExecStart=%h/.nodeboi/nodeboi.sh
 Restart=always
-User=$USER
-WorkingDirectory=$HOME
+User=%u
+WorkingDirectory=%h
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
@@ -1050,7 +1064,13 @@ EOL
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now nodeboi
-
-    echo "[✓] Nodeboi service installed and running"
-    echo "    Manage with: systemctl status nodeboi | start | stop | restart"
 }
+
+# Install and start systemd service
+setup_nodeboi_service
+
+# Final user message
+echo
+echo "[✓] Installation complete."
+echo "Type 'nodeboi' to start the Nodeboi menu at any time."
+echo
