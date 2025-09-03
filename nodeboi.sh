@@ -1545,35 +1545,38 @@ check_node_health() {
     fi
 
     # Check for updates
-    local exec_update_indicator=""
-    local cons_update_indicator=""
+  if [[ "$CHECK_UPDATES" == "true" ]]; then
+    local exec_client_lower=$(echo "$exec_client" | tr '[:upper:]' '[:lower:]')
+    local cons_client_lower=$(echo "$cons_client" | tr '[:upper:]' '[:lower:]')
 
-    if [[ "$CHECK_UPDATES" == "true" ]]; then
-        local exec_client_lower=$(echo "$exec_client" | tr '[:upper:]' '[:lower:]')
-        local cons_client_lower=$(echo "$cons_client" | tr '[:upper:]' '[:lower:]')
-
-        if [[ -n "$exec_client_lower" ]] && [[ "$exec_client_lower" != "unknown" ]]; then
-            local latest_exec=$(get_latest_version "$exec_client_lower" 2>/dev/null)
-            if [[ -n "$latest_exec" ]] && [[ -n "$exec_version" ]]; then
-                local exec_version_normalized=${exec_version#v}
-                local latest_exec_normalized=${latest_exec#v}
-                if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
+    if [[ -n "$exec_client_lower" ]] && [[ "$exec_client_lower" != "unknown" ]]; then
+        local latest_exec=$(get_latest_version "$exec_client_lower" 2>/dev/null)
+        if [[ -n "$latest_exec" ]] && [[ -n "$exec_version" ]]; then
+            local exec_version_normalized=${exec_version#v}
+            local latest_exec_normalized=${latest_exec#v}
+            if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
+                # Check if Docker image actually exists before showing arrow
+                if validate_client_version "$exec_client_lower" "$latest_exec" 2>/dev/null; then
                     exec_update_indicator=" ${YELLOW}⬆${NC}"
                 fi
             fi
         fi
+    fi
 
-        if [[ -n "$cons_client_lower" ]] && [[ "$cons_client_lower" != "unknown" ]]; then
-            local latest_cons=$(get_latest_version "$cons_client_lower" 2>/dev/null)
-            if [[ -n "$latest_cons" ]] && [[ -n "$cons_version" ]]; then
-                local cons_version_normalized=${cons_version#v}
-                local latest_cons_normalized=${latest_cons#v}
-                if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
+    if [[ -n "$cons_client_lower" ]] && [[ "$cons_client_lower" != "unknown" ]]; then
+        local latest_cons=$(get_latest_version "$cons_client_lower" 2>/dev/null)
+        if [[ -n "$latest_cons" ]] && [[ -n "$cons_version" ]]; then
+            local cons_version_normalized=${cons_version#v}
+            local latest_cons_normalized=${latest_cons#v}
+            if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
+                # Check if Docker image actually exists before showing arrow
+                if validate_client_version "$cons_client_lower" "$latest_cons" 2>/dev/null; then
                     cons_update_indicator=" ${YELLOW}⬆${NC}"
                 fi
             fi
         fi
     fi
+fi
 
     # Check container status
     local containers_running=false
