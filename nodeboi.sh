@@ -1458,10 +1458,18 @@ check_node_health() {
 
     if [[ "$containers_running" == true ]]; then
         # Check execution client health and sync
-        local sync_response=$(curl -s -X POST "http://localhost:${el_rpc}" \
-            -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
-            --max-time 2 2>/dev/null)
+        local check_host="localhost"
+if [[ "$host_ip" != "127.0.0.1" ]] && [[ -n "$host_ip" ]]; then
+    if [[ "$host_ip" == "0.0.0.0" ]]; then
+        check_host="localhost"  # Still check localhost when bound to all
+    else
+        check_host="$host_ip"  # Use the LAN IP for checks
+    fi
+fi
+local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
+    --max-time 2 2>/dev/null)
         
         if [[ -n "$sync_response" ]] && echo "$sync_response" | grep -q '"result"'; then
             el_check="${GREEN}✓${NC}"
@@ -1470,7 +1478,7 @@ check_node_health() {
                 el_sync_status=" (Syncing)"
             elif echo "$sync_response" | grep -q '"result":false'; then
                 # Check if actually synced or waiting
-                local block_response=$(curl -s -X POST "http://localhost:${el_rpc}" \
+                local block_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                     -H "Content-Type: application/json" \
                     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
                     --max-time 2 2>/dev/null)
@@ -1479,7 +1487,7 @@ check_node_health() {
                     el_sync_status=" (Waiting)"
                 fi
             fi
-        elif curl -s -X POST "http://localhost:${el_rpc}" \
+        elif curl -s -X POST "http://${check_host}:${el_rpc}" \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
             --max-time 2 2>/dev/null | grep -q '"result"'; then
@@ -1488,7 +1496,7 @@ check_node_health() {
         fi
 
         # Check consensus client health and sync
-        local cl_sync_response=$(curl -s "http://localhost:${cl_rest}/eth/v1/node/syncing" --max-time 2 2>/dev/null)
+        local cl_sync_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/syncing" --max-time 2 2>/dev/null)
         
         if [[ -n "$cl_sync_response" ]]; then
             cl_check="${GREEN}✓${NC}"
@@ -1500,7 +1508,7 @@ check_node_health() {
             elif echo "$cl_sync_response" | grep -q '"is_optimistic":true'; then
                 cl_sync_status=" (Optimistic)"
             fi
-        elif curl -s "http://localhost:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null | grep -q '"data"'; then
+        elif curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null | grep -q '"data"'; then
             cl_check="${GREEN}✓${NC}"
             cl_sync_status=" (Starting)"
         fi
@@ -1602,7 +1610,7 @@ show_node_details() {
                     done <<< "$services"
                     
                     # Check sync status
-                    local sync_status=$(curl -s -X POST "http://localhost:${el_rpc}" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' 2>/dev/null | jq -r '.result' 2>/dev/null)
+                    local sync_status=$(curl -s -X POST "http://${check_host}:${el_rpc}" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' 2>/dev/null | jq -r '.result' 2>/dev/null)
                     
                     if [[ "$sync_status" == "false" ]]; then
                         echo "  Sync: ${GREEN}Synced${NC}"
@@ -1622,9 +1630,9 @@ show_node_details() {
             local cl_p2p=$(grep "CL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
             
             echo "  Endpoints:"
-            echo "    Execution RPC:  http://localhost:${el_rpc}"
+            echo "    Execution RPC:  http://${check_host}:${el_rpc}"
             echo "    Execution WS:   ws://localhost:${el_ws}"  
-            echo "    Consensus REST: http://localhost:${cl_rest}"
+            echo "    Consensus REST: http://${check_host}:${cl_rest}"
             echo "  P2P Ports (need to be forwarded in your router):"
             echo -e "    Execution P2P:  ${YELLOW}${el_p2p}${NC}/TCP+UDP"
             echo -e "    Consensus P2P:  ${YELLOW}${cl_p2p}${NC}/TCP+UDP"
