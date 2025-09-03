@@ -1,5 +1,12 @@
 #!/bin/bash
 # lib/install.sh - Installation and update functions
+INSTALL_DIR="$HOME/.nodeboi"
+mkdir -p "$INSTALL_DIR"
+
+curl -sL https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/nodeboi.sh -o "$INSTALL_DIR/nodeboi"
+chmod +x "$INSTALL_DIR/nodeboi"
+
+sudo ln -sf "$INSTALL_DIR/nodeboi" /usr/local/bin/nodeboi
 
 # Source dependencies
 source "${NODEBOI_LIB}/clients.sh"
@@ -1023,7 +1030,7 @@ Description=Nodeboi CLI
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/nodeboi
+ExecStart=%h/.nodeboi/nodeboi
 Restart=always
 User=$USER
 WorkingDirectory=$HOME
