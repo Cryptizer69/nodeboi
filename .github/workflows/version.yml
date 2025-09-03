@@ -50,6 +50,6 @@ jobs:
           Automated release of version ${{ steps.bump.outputs.new }}.
           Run with:
           ```bash
-          wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/install.sh | bash
+          wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/lib/install.sh | bash
           ```
         files: nodeboi.tar.gz
