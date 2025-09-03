@@ -1,10 +1,9 @@
 #!/bin/bash
-# NODEBOI v2.0.10 - Clean 4-file structure
 
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="0.0.19"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
