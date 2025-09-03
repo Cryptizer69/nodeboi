@@ -29,7 +29,7 @@ print_header() {
 HEADER
     echo -e "${NC}"
     echo -e "                    ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${YELLOW}v2.0.10${NC}"
+    echo -e "                           ${YELLOW}v2.0.11${NC}"
     echo
 }
 
@@ -119,8 +119,8 @@ case "$1" in
         echo "Testing functions:"
         echo -n "  Docker image for teku: "
         get_docker_image "teku"
-        echo -n "  Normalize version v2.0.10 for teku: "
-        normalize_version "teku" "v2.0.10"
+        echo -n "  Normalize version v2.0.11 for teku: "
+        normalize_version "teku" "v2.0.11"
         echo ""
         echo "All systems operational!"
         ;;
