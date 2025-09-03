@@ -1977,7 +1977,7 @@ main_menu() {
                 show_node_details
                 ;;
             4)
-                start_stop_menu
+                manage_node_state
                 ;;
             5)
                 update_node
