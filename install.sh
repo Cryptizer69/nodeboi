@@ -1054,5 +1054,3 @@ EOL
     echo "[✓] Nodeboi service installed and running"
     echo "    Manage with: systemctl status nodeboi | start | stop | restart"
 }
-
-}
