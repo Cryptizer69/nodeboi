@@ -2003,20 +2003,37 @@ update_nodeboi() {
     read -p "Do you want to continue? (y/n): " -r
     echo
     
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo
-        # Run the update script
-        if [[ -f "$HOME/.nodeboi/update.sh" ]]; then
-            bash "$HOME/.nodeboi/update.sh"
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo
+    # Get current version before update
+    local current_version="${SCRIPT_VERSION}"
+    
+    # Run the update script
+    if [[ -f "$HOME/.nodeboi/update.sh" ]]; then
+        bash "$HOME/.nodeboi/update.sh"
+        
+        # Get new version from updated file
+        local new_version=$(grep -oP 'SCRIPT_VERSION="\K[^"]+' "$HOME/.nodeboi/nodeboi.sh" 2>/dev/null || echo "unknown")
+        
+        if [[ "$current_version" != "$new_version" ]]; then
+            echo -e "\n${GREEN}✓ NODEBOI updated from v${current_version} to v${new_version}${NC}"
         else
-            echo -e "${RED}[ERROR]${NC} Update script not found at $HOME/.nodeboi/update.sh"
-            echo "You may need to reinstall NODEBOI."
-            press_enter
+            echo -e "\n${GREEN}✓ NODEBOI is already up to date (v${current_version})${NC}"
         fi
+        
+        echo -e "${CYAN}Restarting NODEBOI...${NC}\n"
+        sleep 2
+        # Restart the script to load new version
+        exec "$0"
     else
-        echo "Update cancelled."
+        echo -e "${RED}[ERROR]${NC} Update script not found at $HOME/.nodeboi/update.sh"
+        echo "You may need to reinstall NODEBOI."
         press_enter
     fi
+else
+    echo "Update cancelled."
+    press_enter
+fi
 }
 
 # Helper function if not already defined
