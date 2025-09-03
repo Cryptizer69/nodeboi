@@ -1,15 +1,23 @@
 #!/bin/bash
 # lib/install.sh - Installation and update functions
 INSTALL_DIR="$HOME/.nodeboi"
-mkdir -p "$INSTALL_DIR"
 
-curl -sL https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/nodeboi.sh -o "$INSTALL_DIR/nodeboi"
-chmod +x "$INSTALL_DIR/nodeboi"
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+    echo "[*] Updating existing Nodeboi installation..."
+    git -C "$INSTALL_DIR" pull --ff-only
+else
+    echo "[*] Fresh install of Nodeboi..."
+    rm -rf "$INSTALL_DIR"
+    git clone https://github.com/Cryptizer69/nodeboi "$INSTALL_DIR"
+fi
 
-sudo ln -sf "$INSTALL_DIR/nodeboi" /usr/local/bin/nodeboi
+# Maak wrapper script in /usr/local/bin
+sudo tee /usr/local/bin/nodeboi > /dev/null <<'EOL'
+#!/bin/bash
+exec "$HOME/.nodeboi/nodeboi.sh" "$@"
+EOL
 
-# Source dependencies
-source "${NODEBOI_LIB}/clients.sh"
+sudo chmod +x /usr/local/bin/nodeboi
 
 # Helper function
 get_next_instance_number() {
