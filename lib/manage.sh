@@ -513,9 +513,9 @@ print_dashboard() {
 # Print plugin service dashboard
 print_plugin_dashboard() {
     local found_plugins=false
-    
     # Check for SSV operators
     for dir in "$HOME"/ssv*; do
+        [[ -e "$dir" ]] || continue  # Skip if no matching directories
         if [[ -d "$dir" && -f "$dir/.env" ]]; then
             if [[ "$found_plugins" == false ]]; then
                 echo -e "${BOLD}Plugin Services${NC}\n===============\n"
