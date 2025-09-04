@@ -1,5 +1,8 @@
 #!/bin/bash
-# install.sh - Installation and update functions
+# lib/install.sh - Installation and update functions
+
+# Source plugin functions if available
+[[ -f "${NODEBOI_LIB}/plugins.sh" ]] && source "${NODEBOI_LIB}/plugins.sh"
 
 INSTALL_DIR="$HOME/.nodeboi"
 
@@ -418,6 +421,7 @@ cleanup_failed_installation() {
     [[ -d "$node_dir" ]] && { rm -rf "$node_dir"; echo "Removed directory: $node_dir" >&2; }
     id "$node_name" &>/dev/null && { sudo userdel "$node_name" 2>/dev/null || true; echo "Removed user: $node_name" >&2; }
 }
+
 install_node() {
     echo -e "\n${CYAN}${BOLD}Starting Installation${NC}\n===================="
 
@@ -1042,6 +1046,12 @@ else
     echo "Update cancelled."
     press_enter
 fi
+}
+
+# Initialize plugin system directories
+init_plugin_system() {
+    # Create plugin template directory if it doesn't exist
+    mkdir -p "${NODEBOI_HOME}/plugins/templates"
 }
 
 # Fix permissions
