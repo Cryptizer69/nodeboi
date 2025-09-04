@@ -365,7 +365,7 @@ check_node_health() {
             local latest_exec_normalized=${latest_exec#v}
             if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
                 # Check if Docker image actually exists before showing arrow
-                if validate_client_version "$exec_client_lower" "$latest_exec" 2>/dev/null; then
+                if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
                     exec_update_indicator=" ${YELLOW}⬆${NC}"
                 fi
             fi
@@ -379,7 +379,7 @@ check_node_health() {
             local latest_cons_normalized=${latest_cons#v}
             if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
                 # Check if Docker image actually exists before showing arrow
-                if validate_client_version "$cons_client_lower" "$latest_cons" 2>/dev/null; then
+                if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
                     cons_update_indicator=" ${YELLOW}⬆${NC}"
                 fi
             fi
