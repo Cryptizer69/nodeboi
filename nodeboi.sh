@@ -37,7 +37,7 @@ print_header() {
 HEADER
     echo -e "${NC}"
     echo -e "                    ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                           ${YELLOW}v${SCRIPT_VERSION}${NC}"
+    echo -e "                           ${YELLOW}${SCRIPT_VERSION}${NC}"
 
     echo
 }
