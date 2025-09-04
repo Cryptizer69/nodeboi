@@ -724,24 +724,86 @@ install_node() {
     press_enter
 }
 
+# Check if a node has updates available
+has_updates_available() {
+    local node_dir="$1"
+    local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2)
+    
+    # Detect clients
+    local clients=$(detect_node_clients "$compose_file")
+    local exec_client="${clients%:*}"
+    local cons_client="${clients#*:}"
+    
+    # Get current versions
+    local exec_env_var=$(get_client_env_var "$exec_client")
+    local cons_env_var=$(get_client_env_var "$cons_client")
+    local exec_version=$(grep "${exec_env_var}=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//') 
+    local cons_version=$(grep "${cons_env_var}=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//') 
+    
+    # Check for updates
+    if [[ -n "$exec_client" && "$exec_client" != "unknown" ]]; then
+        local latest_exec=$(get_latest_version "$exec_client" 2>/dev/null)
+        if [[ -n "$latest_exec" && -n "$exec_version" ]]; then
+            local exec_version_normalized=${exec_version#v}
+            local latest_exec_normalized=${latest_exec#v}
+            if [[ "$latest_exec_normalized" != "$exec_version_normalized" && -n "$latest_exec_normalized" ]]; then
+                return 0  # Has updates
+            fi
+        fi
+    fi
+    
+    if [[ -n "$cons_client" && "$cons_client" != "unknown" ]]; then
+        local latest_cons=$(get_latest_version "$cons_client" 2>/dev/null)
+        if [[ -n "$latest_cons" && -n "$cons_version" ]]; then
+            local cons_version_normalized=${cons_version#v}
+            local latest_cons_normalized=${latest_cons#v}
+            if [[ "$latest_cons_normalized" != "$cons_version_normalized" && -n "$latest_cons_normalized" ]]; then
+                return 0  # Has updates
+            fi
+        fi
+    fi
+    
+    return 1  # No updates
+}
+
 update_node() {
     trap 'echo -e "\n${YELLOW}Update cancelled${NC}"; press_enter; return' INT
-    echo -e "\n${CYAN}${BOLD}Update Node${NC}\n===========\n"
 
     # List existing nodes
-    local nodes=()
+    local all_nodes=()
     for dir in "$HOME"/ethnode*; do
-        [[ -d "$dir" && -f "$dir/.env" ]] && nodes+=("$(basename "$dir")")
+        [[ -d "$dir" && -f "$dir/.env" ]] && all_nodes+=("$(basename "$dir")")
     done
 
-    if [[ ${#nodes[@]} -eq 0 ]]; then
-        echo "No nodes found to update."
+    if [[ ${#all_nodes[@]} -eq 0 ]]; then
+        clear
+        print_header
+        print_box "No nodes found to update" "warning"
         press_enter
         trap - INT
         return
     fi
 
-    echo "Select node to update:"
+    # Filter nodes with updates available
+    local nodes=()
+    for node in "${all_nodes[@]}"; do
+        local node_dir="$HOME/$node"
+        if has_updates_available "$node_dir"; then
+            nodes+=("$node")
+        fi
+    done
+
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        clear
+        print_header
+        print_box "No updates available for any nodes" "info"
+        press_enter
+        trap - INT
+        return
+    fi
+
+    # Create menu options with client info
+    local node_options=()
     for i in "${!nodes[@]}"; do
         local node_dir="$HOME/${nodes[$i]}"
         local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2)
@@ -755,303 +817,87 @@ update_node() {
         [[ "$compose_file" == *"teku"* ]] && clients="${clients}Teku"
         [[ "$compose_file" == *"grandine"* ]] && clients="${clients}Grandine"
 
-        echo "  $((i+1))) ${nodes[$i]} ($clients)"
+        node_options+=("${nodes[$i]} ($clients)")
     done
-    echo "  A) Update all nodes"
-    echo "  C) Cancel"
-    echo
+    
+    # Add "update all" option only if there are multiple nodes with updates
+    if [[ ${#nodes[@]} -gt 1 ]]; then
+        node_options+=("update all ethnodes")
+    fi
+    node_options+=("cancel")
 
-    read -p "Enter choice: " choice
-
-    [[ "${choice^^}" == "C" ]] && {
-        echo "Update cancelled."
-        trap - INT
-        return
-    }
-
-    #---------------------------------------------------------------------------
-    # Handle "Update all" option - FIXED to only prompt for nodes with updates
-    #---------------------------------------------------------------------------
-    if [[ "${choice^^}" == "A" ]]; then
-        echo -e "\n${BOLD}Checking for available updates...${NC}\n"
-
-        local nodes_to_restart=()
-        local nodes_with_pending=()
-
-        for node_name in "${nodes[@]}"; do
-            local node_dir="$HOME/$node_name"
-            local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" | cut -d'=' -f2)
+    local selection
+    if selection=$(fancy_select_menu "Update Ethnode" "${node_options[@]}"); then
+        local total_nodes=${#nodes[@]}
+        
+        if [[ ${#nodes[@]} -gt 1 && $selection -eq ${#nodes[@]} ]]; then
+            # Update all ethnodes (only available when multiple nodes have updates)
+            clear
+            print_header
             
-            # Detect clients
-            local exec_client=""
-            [[ "$compose_file" == *"reth.yml"* ]] && exec_client="reth"
-            [[ "$compose_file" == *"besu.yml"* ]] && exec_client="besu"
-            [[ "$compose_file" == *"nethermind.yml"* ]] && exec_client="nethermind"
-            
-            local cons_client=""
-            [[ "$compose_file" == *"lodestar"* ]] && cons_client="lodestar"
-            [[ "$compose_file" == *"teku"* ]] && cons_client="teku"
-            [[ "$compose_file" == *"grandine"* ]] && cons_client="grandine"
-            
-            # Check if updates are available for this node
-            local exec_has_update=false
-            local cons_has_update=false
-            
-            if [[ -n "$exec_client" ]]; then
-                local current_exec=$(grep "${exec_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
-                local latest_exec=$(get_latest_version "$exec_client" 2>/dev/null)
-                
-                # Normalize versions for comparison
-                local current_exec_norm="${current_exec#v}"
-                local latest_exec_norm="${latest_exec#v}"
-                
-                if [[ -n "$latest_exec" ]] && [[ "$current_exec_norm" != "$latest_exec_norm" ]]; then
-                    exec_has_update=true
-                fi
-            fi
-            
-            if [[ -n "$cons_client" ]]; then
-                local current_cons=$(grep "${cons_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
-                local latest_cons=$(get_latest_version "$cons_client" 2>/dev/null)
-                
-                # Normalize versions for comparison
-                local current_cons_norm="${current_cons#v}"
-                local latest_cons_norm="${latest_cons#v}"
-                
-                if [[ -n "$latest_cons" ]] && [[ "$current_cons_norm" != "$latest_cons_norm" ]]; then
-                    cons_has_update=true
-                fi
-            fi
-            
-            # Skip this node if no updates available
-            if [[ "$exec_has_update" == false ]] && [[ "$cons_has_update" == false ]]; then
-                echo -e "${GREEN}✓${NC} $node_name is already up to date"
-                continue
-            fi
-            
-            # This node has updates, proceed with prompting
-            echo -e "\n${CYAN}Updating $node_name...${NC}"
-            
-            local updated=false
-            local has_pending=false
-
-            # Update execution client if it has updates
-            if [[ "$exec_has_update" == true ]]; then
-                echo "Execution client: $exec_client"
-                local current_exec=$(grep "${exec_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
-                local latest_exec=$(get_latest_version "$exec_client" 2>/dev/null)
-                
-                echo "  Current version: $current_exec"
-                echo "  Latest version: $latest_exec"
-                read -p "  Enter version to update to (leave blank for latest): " exec_version
-                
-                # Use latest if blank
-                if [[ -z "$exec_version" ]]; then
-                    exec_version="$latest_exec"
-                    echo "  Using latest version: $exec_version"
-                fi
-                
-                if [[ -n "$exec_version" ]]; then
-                    # Validate before applying
-                    if validate_client_version "$exec_client" "$exec_version"; then
-                        update_client_version "$node_dir" "$exec_client" "$exec_version"
-                        echo "  ✓ Updated to version: $exec_version"
-                        updated=true
-                    else
-                        echo "  ⚠ Version $exec_version selected but Docker image not available yet"
-                        echo "    Config NOT updated. Wait for Docker image or choose different version."
-                        has_pending=true
-                    fi
-                fi
-            fi
-
-            # Update consensus client if it has updates
-            if [[ "$cons_has_update" == true ]]; then
-                echo "Consensus client: $cons_client"
-                local current_cons=$(grep "${cons_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
-                local latest_cons=$(get_latest_version "$cons_client" 2>/dev/null)
-                
-                echo "  Current version: $current_cons"
-                echo "  Latest version: $latest_cons"
-                read -p "  Enter version to update to (leave blank for latest): " cons_version
-                
-                # Use latest if blank
-                if [[ -z "$cons_version" ]]; then
-                    cons_version="$latest_cons"
-                    echo "  Using latest version: $cons_version"
-                fi
-                
-                if [[ -n "$cons_version" ]]; then
-                    # Validate before applying
-                    if validate_client_version "$cons_client" "$cons_version"; then
-                        update_client_version "$node_dir" "$cons_client" "$cons_version"
-                        echo "  ✓ Updated to version: $cons_version"
-                        updated=true
-                    else
-                        echo "  ⚠ Version $cons_version selected but Docker image not available yet"
-                        echo "    Config NOT updated. Wait for Docker image or choose different version."
-                        has_pending=true
-                    fi
-                fi
-            fi
-
-            if [[ "$updated" == true ]]; then
-                nodes_to_restart+=("$node_name")
-            fi
-
-            if [[ "$has_pending" == true ]]; then
-                nodes_with_pending+=("$node_name")
-            fi
-        done
-
-        # Show summary
-        echo
-        echo "─────────────────────────────"
-        echo -e "${BOLD}Update Summary:${NC}"
-
-        if [[ ${#nodes_to_restart[@]} -gt 0 ]]; then
-            echo -e "${GREEN}Successfully updated:${NC}"
-            for node in "${nodes_to_restart[@]}"; do
-                echo "  ✓ $node"
-            done
-        fi
-
-        if [[ ${#nodes_with_pending[@]} -gt 0 ]]; then
-            echo -e "${YELLOW}Pending (Docker images not available):${NC}"
-            for node in "${nodes_with_pending[@]}"; do
-                echo "  ⚠ $node"
-            done
-        fi
-
-        # Restart updated nodes if any
-        if [[ ${#nodes_to_restart[@]} -gt 0 ]]; then
+            echo -e "\n${CYAN}${BOLD}Updating All Ethnodes${NC}"
+            echo "======================="
             echo
-            read -p "Restart updated nodes to apply changes? [y/n]: " -r
-            echo
-
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                for node_name in "${nodes_to_restart[@]}"; do
-                    echo "Restarting $node_name..."
-                    cd "$HOME/$node_name"
-                    safe_docker_stop "$node_name"
-                    echo "Pulling new images..."
-                    docker compose pull
-                    docker compose up -d
-                done
-                echo -e "\n${GREEN}✓ All updated nodes restarted${NC}"
-            else
-                echo "Nodes updated but not restarted. To apply changes manually:"
-                for node_name in "${nodes_to_restart[@]}"; do
-                    echo "  cd $HOME/$node_name && docker compose down && docker compose pull && docker compose up -d"
-                done
-            fi
-        else
-            echo -e "\n${GREEN}All nodes are already up to date!${NC}"
-        fi
-
-    #---------------------------------------------------------------------------
-    # Handle single node update
-    #---------------------------------------------------------------------------
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#nodes[@]} ]]; then
-        local node_name="${nodes[$((choice-1))]}"
-        local node_dir="$HOME/$node_name"
-
-        echo -e "\nUpdating $node_name...\n"
-
-        # Get current client info
-        local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" | cut -d'=' -f2)
-
-        # Detect clients
-        local exec_client=""
-        [[ "$compose_file" == *"reth.yml"* ]] && exec_client="reth"
-        [[ "$compose_file" == *"besu.yml"* ]] && exec_client="besu"
-        [[ "$compose_file" == *"nethermind.yml"* ]] && exec_client="nethermind"
-
-        local cons_client=""
-        [[ "$compose_file" == *"lodestar"* ]] && cons_client="lodestar"
-        [[ "$compose_file" == *"teku"* ]] && cons_client="teku"
-        [[ "$compose_file" == *"grandine"* ]] && cons_client="grandine"
-
-        local exec_version=""
-        local cons_version=""
-        local updates_applied=false
-        local updates_pending=false
-
-        # Update execution client
-        if [[ -n "$exec_client" ]]; then
-            echo "Execution client: $exec_client"
-            exec_version=$(prompt_version "$exec_client" "execution")
-            if [[ -n "$exec_version" ]]; then
-                if validate_client_version "$exec_client" "$exec_version"; then
-                    update_client_version "$node_dir" "$exec_client" "$exec_version"
-                    echo -e "  ${GREEN}✓ Updated to version: $exec_version${NC}"
-                    updates_applied=true
-                else
-                    echo -e "  ${YELLOW}⚠ Version $exec_version not available on Docker Hub yet${NC}"
-                    echo "    Configuration NOT updated. Image may still be building."
-                    updates_pending=true
-                fi
-            fi
-        fi
-
-        # Update consensus client
-        if [[ -n "$cons_client" ]]; then
-            echo "Consensus client: $cons_client"
-            cons_version=$(prompt_version "$cons_client" "consensus")
-            if [[ -n "$cons_version" ]]; then
-                if validate_client_version "$cons_client" "$cons_version"; then
-                    update_client_version "$node_dir" "$cons_client" "$cons_version"
-                    echo -e "  ${GREEN}✓ Updated to version: $cons_version${NC}"
-                    updates_applied=true
-                else
-                    echo -e "  ${YELLOW}⚠ Version $cons_version not available on Docker Hub yet${NC}"
-                    echo "    Configuration NOT updated. Image may still be building."
-                    updates_pending=true
-                fi
-            fi
-        fi
-
-        # Handle results
-        if [[ "$updates_applied" == true ]]; then
-            echo
-            echo -e "${GREEN}✓ Updates validated and applied${NC}"
-            echo
-            read -p "Restart node to apply updates? [y/n]: " -r
-            echo
-
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                echo "Stopping $node_name..."
-                cd "$node_dir"
-                safe_docker_stop "$node_name"
-                echo "Pulling new images..."
+            
+            for node_name in "${nodes[@]}"; do
+                echo -e "${CYAN}Updating $node_name...${NC}"
+                local node_dir="$HOME/$node_name"
+                cd "$node_dir" 2>/dev/null || continue
+                
+                echo "  Pulling latest images..."
                 docker compose pull
-                echo "Starting $node_name..."
+                echo "  Restarting services..."
+                safe_docker_stop "$node_name"
                 docker compose up -d
-                echo -e "${GREEN}✓ Node updated and restarted${NC}"
-            else
-                echo "Node updated but not restarted. To apply changes:"
-                echo "  cd $node_dir"
-                echo "  docker compose down && docker compose pull && docker compose up -d"
-            fi
-        elif [[ "$updates_pending" == true ]]; then
-            echo
-            echo -e "${YELLOW}No updates were applied.${NC}"
-            echo "Selected versions are not available on Docker Hub yet."
-            echo "Options:"
-            echo "  1) Wait a few hours for Docker images to be built"
-            echo "  2) Run update again with different versions"
-            echo "  3) Check Docker Hub for available versions"
+                echo -e "  ${GREEN}✓ $node_name updated${NC}\n"
+            done
+            
+            print_box "All ethnodes updated successfully" "success"
+            
+        elif [[ ${#nodes[@]} -eq 1 && $selection -eq 1 ]] || [[ ${#nodes[@]} -gt 1 && $selection -eq $((${#nodes[@]} + 1)) ]]; then
+            # Cancel
+            trap - INT
+            return
+            
         else
+            # Individual node selected
+            local node_name="${nodes[$selection]}"
+            local node_dir="$HOME/$node_name"
+            
+            clear
+            print_header
+            
+            echo -e "\n${CYAN}${BOLD}Updating $node_name${NC}"
+            echo "==================="
             echo
-            echo "No changes made (using existing versions)."
+            
+            cd "$node_dir" 2>/dev/null || {
+                print_box "Error: Could not access $node_name directory" "error"
+                press_enter
+                trap - INT
+                return
+            }
+            
+            echo -e "${CYAN}Pulling latest images...${NC}"
+            if docker compose pull; then
+                echo -e "${CYAN}Restarting $node_name...${NC}"
+                safe_docker_stop "$node_name"
+                if docker compose up -d; then
+                    print_box "$node_name updated and restarted successfully" "success"
+                else
+                    print_box "Failed to restart $node_name" "error"
+                fi
+            else
+                print_box "Failed to pull images for $node_name" "error"
+            fi
         fi
     else
-        echo "Invalid selection."
+        # User pressed 'q'
+        trap - INT
+        return
     fi
-
+    
     press_enter
-
-    # Clear the trap when done
     trap - INT
 }
 

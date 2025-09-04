@@ -47,59 +47,59 @@ press_enter() {
     read -p "Press Enter to continue..."
 }
 
-# Main menu
+# Main menu with fancy UI as default
 main_menu() {
     while true; do
-        clear
-        print_header
-        print_dashboard        # Shows nodes
-        print_plugin_dashboard  # NEW: Shows plugins
+        local menu_options=(
+            "Install new node"
+            "Remove node"  
+            "View node details"
+            "Start/stop nodes"
+            "Updates"
+            "Plugin services"
+            "Quit"
+        )
 
-        echo -e "${BOLD}Main Menu${NC}\n=========="
-        echo "  1) Install new node"
-        echo "  2) Remove node"
-        echo "  3) View node details"
-        echo "  4) Start/stop nodes"
-        echo "  5) Update nodes"
-        echo "  6) Plugin services"    # NEW: Plugin menu
-        echo "  7) Update NODEBOI"
-        echo "  Q) Quit"
-        echo
+        local selection
+        if selection=$(fancy_select_menu "Main Menu" "${menu_options[@]}"); then
+            case $selection in
+                0) install_node ;;
+                1) remove_nodes_menu ;;
+                2) show_node_details ;;
+                3) manage_node_state ;;
+                4) updates_menu ;;
+                5) manage_plugins_menu ;;
+                6) echo -e "\n${GREEN}Goodbye!${NC}"; exit 0 ;;
+            esac
+        else
+            # User pressed 'q' or quit
+            echo -e "\n${GREEN}Goodbye!${NC}"
+            exit 0
+        fi
+    done
+}
 
-        read -p "Select option: " -r choice
-        echo
+# Updates menu
+updates_menu() {
+    while true; do
+        local update_options=(
+            "Update system (Linux packages)"
+            "Update ethnode"
+            "Update nodeboi"
+            "Back to main menu"
+        )
 
-        case "$choice" in
-            1)
-                install_node
-                ;;
-            2)
-                remove_nodes_menu
-                ;;
-            3)
-                show_node_details
-                ;;
-            4)
-                manage_node_state
-                ;;
-            5)
-                update_node
-                ;;
-            6)
-                manage_plugins_menu  # NEW: From plugins.sh
-                ;;
-            7)
-                update_nodeboi
-                ;;
-            [Qq])
-                echo "Exiting..."
-                exit 0
-                ;;
-            *)
-                echo "Invalid option"
-                press_enter
-                ;;
-        esac
+        local selection
+        if selection=$(fancy_select_menu "Updates" "${update_options[@]}"); then
+            case $selection in
+                0) update_system ;;
+                1) update_node ;;
+                2) update_nodeboi ;;
+                3) return ;;  # Back to main menu
+            esac
+        else
+            return  # User pressed 'q' - back to main menu
+        fi
     done
 }
 
