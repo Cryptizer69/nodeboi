@@ -9,6 +9,8 @@ echo "[*] Preparing Nodeboi..."
 echo "[*] Installing Nodeboi..."
 rm -rf "$INSTALL_DIR"
 git clone -q "$REPO_URL" "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+git config core.fileMode false 
 
 # Fix permissions (only files that must be executable)
 chmod +x "$INSTALL_DIR/nodeboi.sh"
