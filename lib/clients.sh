@@ -118,7 +118,7 @@ get_latest_version() {
 
     # Check cache first
     local cache_file="$HOME/.nodeboi/cache/versions.cache"
-    local cache_duration=3600
+    local cache_duration=300
 
     mkdir -p "$(dirname "$cache_file")"
 
