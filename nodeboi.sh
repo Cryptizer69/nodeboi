@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="v0.2.36"
+SCRIPT_VERSION="v0.2.37"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -128,8 +128,8 @@ case "$1" in
         echo "Testing functions:"
         echo -n "  Docker image for teku: "
         get_docker_image "teku"
-        echo -n "  Normalize version v0.2.36 for teku: "
-        normalize_version "teku" "v0.2.36"
+        echo -n "  Normalize version v0.2.37 for teku: "
+        normalize_version "teku" "v0.2.37"
         echo ""
         echo "All systems operational!"
         ;;
