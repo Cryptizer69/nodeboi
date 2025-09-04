@@ -215,3 +215,20 @@ get_release_url() {
     local repo="${GITHUB_REPOS[$client]}"
     [[ "$repo" != "unknown" ]] && echo "https://github.com/${repo}/releases"
 }
+
+# Clean up stale cache entries
+cleanup_version_cache() {
+    local cache_file="$HOME/.nodeboi/cache/versions.cache"
+    local current_time=$(date +%s)
+    local temp_file="${cache_file}.tmp"
+    
+    [[ -f "$cache_file" ]] || return 0
+    
+    while IFS=':' read -r client version timestamp; do
+        if [[ $((current_time - timestamp)) -lt 300 ]]; then
+            echo "${client}:${version}:${timestamp}" >> "$temp_file"
+        fi
+    done < "$cache_file"
+    
+    mv "$temp_file" "$cache_file" 2>/dev/null || true
+}
