@@ -796,7 +796,9 @@ update_nodeboi() {
         echo "Updating NODEBOI..."
         cd "$HOME/.nodeboi"
         
-        # Simple git pull
+        # Always ignore file permission changes
+        git config core.fileMode false
+        
         if git pull origin main; then
             echo -e "\n${GREEN}✓ NODEBOI updated successfully${NC}"
             echo -e "${CYAN}Restarting NODEBOI...${NC}\n"
