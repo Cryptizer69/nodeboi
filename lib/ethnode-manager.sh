@@ -723,6 +723,7 @@ install_node() {
     echo
     press_enter
 }
+
 update_node() {
     trap 'echo -e "\n${YELLOW}Update cancelled${NC}"; press_enter; return' INT
     echo -e "\n${CYAN}${BOLD}Update Node${NC}\n===========\n"
@@ -769,39 +770,87 @@ update_node() {
     }
 
     #---------------------------------------------------------------------------
-    # Handle "Update all" option
+    # Handle "Update all" option - FIXED to only prompt for nodes with updates
     #---------------------------------------------------------------------------
     if [[ "${choice^^}" == "A" ]]; then
-        echo -e "\n${BOLD}Updating all nodes...${NC}\n"
+        echo -e "\n${BOLD}Checking for available updates...${NC}\n"
 
         local nodes_to_restart=()
         local nodes_with_pending=()
 
         for node_name in "${nodes[@]}"; do
-            echo -e "\n${CYAN}Updating $node_name...${NC}"
             local node_dir="$HOME/$node_name"
-
-            # Get current client info
             local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" | cut -d'=' -f2)
-
+            
             # Detect clients
             local exec_client=""
             [[ "$compose_file" == *"reth.yml"* ]] && exec_client="reth"
             [[ "$compose_file" == *"besu.yml"* ]] && exec_client="besu"
             [[ "$compose_file" == *"nethermind.yml"* ]] && exec_client="nethermind"
-
+            
             local cons_client=""
             [[ "$compose_file" == *"lodestar"* ]] && cons_client="lodestar"
             [[ "$compose_file" == *"teku"* ]] && cons_client="teku"
             [[ "$compose_file" == *"grandine"* ]] && cons_client="grandine"
-
+            
+            # Check if updates are available for this node
+            local exec_has_update=false
+            local cons_has_update=false
+            
+            if [[ -n "$exec_client" ]]; then
+                local current_exec=$(grep "${exec_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+                local latest_exec=$(get_latest_version "$exec_client" 2>/dev/null)
+                
+                # Normalize versions for comparison
+                local current_exec_norm="${current_exec#v}"
+                local latest_exec_norm="${latest_exec#v}"
+                
+                if [[ -n "$latest_exec" ]] && [[ "$current_exec_norm" != "$latest_exec_norm" ]]; then
+                    exec_has_update=true
+                fi
+            fi
+            
+            if [[ -n "$cons_client" ]]; then
+                local current_cons=$(grep "${cons_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+                local latest_cons=$(get_latest_version "$cons_client" 2>/dev/null)
+                
+                # Normalize versions for comparison
+                local current_cons_norm="${current_cons#v}"
+                local latest_cons_norm="${latest_cons#v}"
+                
+                if [[ -n "$latest_cons" ]] && [[ "$current_cons_norm" != "$latest_cons_norm" ]]; then
+                    cons_has_update=true
+                fi
+            fi
+            
+            # Skip this node if no updates available
+            if [[ "$exec_has_update" == false ]] && [[ "$cons_has_update" == false ]]; then
+                echo -e "${GREEN}✓${NC} $node_name is already up to date"
+                continue
+            fi
+            
+            # This node has updates, proceed with prompting
+            echo -e "\n${CYAN}Updating $node_name...${NC}"
+            
             local updated=false
             local has_pending=false
 
-            # Update execution client
-            if [[ -n "$exec_client" ]]; then
+            # Update execution client if it has updates
+            if [[ "$exec_has_update" == true ]]; then
                 echo "Execution client: $exec_client"
-                local exec_version=$(prompt_version "$exec_client" "execution")
+                local current_exec=$(grep "${exec_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+                local latest_exec=$(get_latest_version "$exec_client" 2>/dev/null)
+                
+                echo "  Current version: $current_exec"
+                echo "  Latest version: $latest_exec"
+                read -p "  Enter version to update to (leave blank for latest): " exec_version
+                
+                # Use latest if blank
+                if [[ -z "$exec_version" ]]; then
+                    exec_version="$latest_exec"
+                    echo "  Using latest version: $exec_version"
+                fi
+                
                 if [[ -n "$exec_version" ]]; then
                     # Validate before applying
                     if validate_client_version "$exec_client" "$exec_version"; then
@@ -816,10 +865,22 @@ update_node() {
                 fi
             fi
 
-            # Update consensus client
-            if [[ -n "$cons_client" ]]; then
+            # Update consensus client if it has updates
+            if [[ "$cons_has_update" == true ]]; then
                 echo "Consensus client: $cons_client"
-                local cons_version=$(prompt_version "$cons_client" "consensus")
+                local current_cons=$(grep "${cons_client^^}_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+                local latest_cons=$(get_latest_version "$cons_client" 2>/dev/null)
+                
+                echo "  Current version: $current_cons"
+                echo "  Latest version: $latest_cons"
+                read -p "  Enter version to update to (leave blank for latest): " cons_version
+                
+                # Use latest if blank
+                if [[ -z "$cons_version" ]]; then
+                    cons_version="$latest_cons"
+                    echo "  Using latest version: $cons_version"
+                fi
+                
                 if [[ -n "$cons_version" ]]; then
                     # Validate before applying
                     if validate_client_version "$cons_client" "$cons_version"; then
@@ -885,9 +946,7 @@ update_node() {
                 done
             fi
         else
-            if [[ ${#nodes_with_pending[@]} -eq 0 ]]; then
-                echo -e "\n${YELLOW}No updates were applied.${NC}"
-            fi
+            echo -e "\n${GREEN}All nodes are already up to date!${NC}"
         fi
 
     #---------------------------------------------------------------------------
