@@ -512,31 +512,37 @@ print_dashboard() {
 
 # Print plugin service dashboard
 print_plugin_dashboard() {
-    local found_plugins=false
-    # Check for SSV operators
-    for dir in "$HOME"/ssv*; do
-        [[ -e "$dir" ]] || continue  # Skip if no matching directories
-        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+    # Wrap everything in a subshell to prevent any failures from exiting the main script
+    (
+        local found_plugins=false
+        
+        # Check for SSV operators - use find to avoid glob issues
+        if [[ -d "$HOME" ]]; then
+            while IFS= read -r dir; do
+                if [[ -f "$dir/.env" ]]; then
+                    if [[ "$found_plugins" == false ]]; then
+                        echo -e "${BOLD}Plugin Services${NC}\n===============\n"
+                        found_plugins=true
+                    fi
+                    check_plugin_status "$dir" 2>/dev/null || true
+                fi
+            done < <(find "$HOME" -maxdepth 1 -type d -name "ssv*" 2>/dev/null || true)
+        fi
+        
+        # Check for Vero monitor
+        if [[ -d "$HOME/vero-monitor" && -f "$HOME/vero-monitor/.env" ]]; then
             if [[ "$found_plugins" == false ]]; then
                 echo -e "${BOLD}Plugin Services${NC}\n===============\n"
                 found_plugins=true
             fi
-            check_plugin_status "$dir"
+            check_plugin_status "$HOME/vero-monitor" 2>/dev/null || true
         fi
-    done
-    
-    # Check for Vero monitor
-    if [[ -d "$HOME/vero-monitor" && -f "$HOME/vero-monitor/.env" ]]; then
-        if [[ "$found_plugins" == false ]]; then
-            echo -e "${BOLD}Plugin Services${NC}\n===============\n"
-            found_plugins=true
-        fi
-        check_plugin_status "$HOME/vero-monitor"
-    fi
-    
-    [[ "$found_plugins" == true ]] && echo
+        
+        [[ "$found_plugins" == true ]] && echo
+    ) 2>/dev/null || true
+    # Function always succeeds
+    return 0
 }
-
 # Check individual plugin status (simplified)
 check_plugin_status() {
     local plugin_dir=$1
