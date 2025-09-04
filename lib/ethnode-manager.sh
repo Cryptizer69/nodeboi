@@ -1,5 +1,5 @@
 #!/bin/bash
-# lib/install.sh - Installation and update functions
+# lib/ethnode-manager.sh - Ethereum node installation, updates, and management
 
 # Source plugin functions if available
 [[ -f "${NODEBOI_LIB}/plugins.sh" ]] && source "${NODEBOI_LIB}/plugins.sh"
