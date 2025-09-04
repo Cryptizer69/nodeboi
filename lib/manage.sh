@@ -490,6 +490,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
     echo
 }
 print_dashboard() {
+    cleanup_version_cache 
     echo -e "${BOLD}Node Status Dashboard${NC}\n====================\n"
 
     local found=false
