@@ -50,7 +50,8 @@ main_menu() {
     while true; do
         clear
         print_header
-        print_dashboard
+        print_dashboard        # Shows nodes
+        print_plugin_dashboard  # NEW: Shows plugins
 
         echo -e "${BOLD}Main Menu${NC}\n=========="
         echo "  1) Install new node"
@@ -58,7 +59,8 @@ main_menu() {
         echo "  3) View node details"
         echo "  4) Start/stop nodes"
         echo "  5) Update nodes"
-        echo "  6) Update NODEBOI"
+        echo "  6) Plugin services"    # NEW: Plugin menu
+        echo "  7) Update NODEBOI"
         echo "  Q) Quit"
         echo
 
@@ -82,6 +84,9 @@ main_menu() {
                 update_node
                 ;;
             6)
+                manage_plugins_menu  # NEW: From plugins.sh
+                ;;
+            7)
                 update_nodeboi
                 ;;
             [Qq])
