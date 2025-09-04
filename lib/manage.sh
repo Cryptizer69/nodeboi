@@ -509,6 +509,101 @@ print_dashboard() {
         echo
     fi
 }
+
+# Print plugin service dashboard
+print_plugin_dashboard() {
+    local found_plugins=false
+    
+    # Check for SSV operators
+    for dir in "$HOME"/ssv*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            if [[ "$found_plugins" == false ]]; then
+                echo -e "${BOLD}Plugin Services${NC}\n===============\n"
+                found_plugins=true
+            fi
+            check_plugin_status "$dir"
+        fi
+    done
+    
+    # Check for Vero monitor
+    if [[ -d "$HOME/vero-monitor" && -f "$HOME/vero-monitor/.env" ]]; then
+        if [[ "$found_plugins" == false ]]; then
+            echo -e "${BOLD}Plugin Services${NC}\n===============\n"
+            found_plugins=true
+        fi
+        check_plugin_status "$HOME/vero-monitor"
+    fi
+    
+    [[ "$found_plugins" == true ]] && echo
+}
+
+# Check individual plugin status (simplified)
+check_plugin_status() {
+    local plugin_dir=$1
+    local plugin_name=$(basename "$plugin_dir")
+    local plugin_type=""
+    
+    # Determine plugin type
+    [[ "$plugin_name" =~ ^ssv ]] && plugin_type="SSV"
+    [[ "$plugin_name" == "vero-monitor" ]] && plugin_type="Vero"
+    
+    # Check if running
+    local status="${RED}●${NC}"
+    if cd "$plugin_dir" 2>/dev/null && \
+       docker compose ps --services --filter status=running 2>/dev/null | grep -q .; then
+        status="${GREEN}●${NC}"
+    fi
+    
+    # Display based on type
+    case "$plugin_type" in
+        SSV)
+            local target=$(grep "^TARGET_NODE=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            echo -e "  $status $plugin_name → $target"
+            ;;
+        Vero)
+            local port=$(grep "^VERO_PORT=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            local nodes=$(grep "^MONITORED_NODES=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            echo -e "  $status Vero Monitor (port $port)"
+            [[ -n "$nodes" ]] && echo "       Monitoring: $nodes"
+            ;;
+    esac
+}
+
+# Extended node details to show connected plugins
+show_node_details_extended() {
+    # Call original function
+    show_node_details
+    
+    # Add plugin connections
+    echo -e "\n${BOLD}Plugin Connections:${NC}"
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local node_name=$(basename "$dir")
+            echo -e "\n  $node_name:"
+            
+            # Find SSV operators connected to this node
+            for ssv_dir in "$HOME"/ssv*; do
+                if [[ -f "$ssv_dir/.env" ]]; then
+                    local target=$(grep "^TARGET_NODE=" "$ssv_dir/.env" 2>/dev/null | cut -d'=' -f2)
+                    if [[ "$target" == "$node_name" ]]; then
+                        echo "    • $(basename "$ssv_dir") (SSV operator)"
+                    fi
+                fi
+            done
+            
+            # Check if monitored by Vero
+            if [[ -f "$HOME/vero-monitor/.env" ]]; then
+                local monitored=$(grep "^MONITORED_NODES=" "$HOME/vero-monitor/.env" 2>/dev/null | cut -d'=' -f2)
+                if [[ "$monitored" == *"$node_name"* ]]; then
+                    echo "    • Vero monitor"
+                fi
+            fi
+        fi
+    done
+    
+    press_enter
+}
+
 show_node_details() {
     echo -e "\n${CYAN}${BOLD}Detailed Node Status${NC}\n===================="
 
