@@ -6,15 +6,9 @@ REPO_URL="https://github.com/Cryptizer69/nodeboi"
 
 echo "[*] Preparing Nodeboi..."
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  echo "[*] Updating existing Nodeboi installation..."
-  git -C "$INSTALL_DIR" fetch --all -q
-  git -C "$INSTALL_DIR" reset --hard origin/main -q
-else
-  echo "[*] Fresh install of Nodeboi..."
-  rm -rf "$INSTALL_DIR"
-  git clone -q "$REPO_URL" "$INSTALL_DIR"
-fi
+echo "[*] Installing Nodeboi..."
+rm -rf "$INSTALL_DIR"
+git clone -q "$REPO_URL" "$INSTALL_DIR"
 
 # Fix permissions (only files that must be executable)
 chmod +x "$INSTALL_DIR/nodeboi.sh"
