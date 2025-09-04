@@ -87,7 +87,7 @@ check_prerequisites() {
             echo "To install manually, run:"
             echo "  sudo apt update && sudo apt install -y ${missing_tools[*]}"
             [[ "$install_docker" == true ]] && echo "  curl -fsSL https://get.docker.com | sudo sh && sudo apt install -y docker compose-plugin"
-            exit 1
+            return 1
         fi
     else
         echo -e "${GREEN}✓${NC} All prerequisites satisfied"
