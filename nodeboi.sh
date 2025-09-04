@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="0.1.19"
+SCRIPT_VERSION="0.2.0"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -12,6 +12,8 @@ for lib in "${NODEBOI_LIB}"/*.sh; do
     [[ -f "$lib" ]] && source "$lib"
 done
 
+# Initialize plugin system
+init_plugin_system  
 
 # Colors
 RED='\033[0;31m'
