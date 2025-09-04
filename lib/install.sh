@@ -1053,24 +1053,3 @@ init_plugin_system() {
     # Create plugin template directory if it doesn't exist
     mkdir -p "${NODEBOI_HOME}/plugins/templates"
 }
-
-# Fix permissions
-chmod +x "$INSTALL_DIR/nodeboi.sh"
-chmod -R u+x "$INSTALL_DIR/lib"/*.sh
-
-# Create wrapper script in /usr/local/bin
-sudo tee /usr/local/bin/nodeboi > /dev/null <<'EOL'
-#!/bin/bash
-exec "$HOME/.nodeboi/nodeboi.sh" "$@"
-EOL
-
-sudo chmod +x /usr/local/bin/nodeboi
-
-# Install and start systemd service
-setup_nodeboi_service
-
-# Final user message
-echo
-echo "[✓] Installation complete."
-echo "Type 'nodeboi' to start the Nodeboi menu at any time."
-echo
