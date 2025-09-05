@@ -3,7 +3,7 @@
 
 set -e
 
-NODEBOI_VERSION="v0.3.0"
+NODEBOI_VERSION="v0.3.1"
 INSTALL_DIR="$HOME/.nodeboi"
 BINARY_PATH="/usr/local/bin/nodeboi"
 
