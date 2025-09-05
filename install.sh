@@ -4,9 +4,9 @@ set -euo pipefail
 INSTALL_DIR="$HOME/.nodeboi"
 REPO_URL="https://github.com/Cryptizer69/nodeboi"
 
-echo "[*] Preparing Nodeboi..."
+echo -e "\033[38;5;240m[*] Preparing Nodeboi...\033[0m"
 
-echo "[*] Installing Nodeboi..."
+echo -e "\033[38;5;240m[*] Installing Nodeboi...\033[0m"
 rm -rf "$INSTALL_DIR"
 git clone -q "$REPO_URL" "$INSTALL_DIR"
 cd "$INSTALL_DIR"
@@ -45,5 +45,5 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nodeboi >/dev/null 2>&1 || true
 
 echo
-echo "[✓] Installation complete."
-echo "Type 'nodeboi' to start the Nodeboi menu at any time."
+echo -e "\033[38;5;46m[✓] Installation complete.\033[0m"
+echo -e "\033[38;5;240mType 'nodeboi' to start the Nodeboi menu at any time.\033[0m"

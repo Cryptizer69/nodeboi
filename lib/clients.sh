@@ -5,6 +5,7 @@
 # ============ CLIENT REGISTRY (ADD NEW CLIENTS HERE) ============
 EXECUTION_CLIENTS=("reth" "besu" "nethermind")
 CONSENSUS_CLIENTS=("teku" "lodestar" "grandine")
+OTHER_CLIENTS=("mevboost")
 
 # Docker images for each client
 declare -gA DOCKER_IMAGES=(
@@ -16,6 +17,8 @@ declare -gA DOCKER_IMAGES=(
     ["teku"]="consensys/teku"
     ["lodestar"]="chainsafe/lodestar"
     ["grandine"]="sifrai/grandine"
+    # Other
+    ["mevboost"]="flashbots/mev-boost"
 )
 
 # GitHub repos for version checking
@@ -28,6 +31,8 @@ declare -gA GITHUB_REPOS=(
     ["teku"]="Consensys/teku"
     ["lodestar"]="ChainSafe/lodestar"
     ["grandine"]="grandinetech/grandine"
+    # Other
+    ["mevboost"]="flashbots/mev-boost"
 )
 
 # Version format (some need 'v' prefix, some don't)
@@ -38,6 +43,7 @@ declare -gA VERSION_PREFIX=(
     ["teku"]=""
     ["lodestar"]="v"
     ["grandine"]=""
+    ["mevboost"]=""
 )
 
 # Fallback versions when API fails
@@ -48,6 +54,7 @@ declare -gA FALLBACK_VERSIONS=(
     ["teku"]="24.10.3"
     ["lodestar"]="v1.22.0"
     ["grandine"]="0.5.0"
+    ["mevboost"]="1.9"
 )
 
 # ============ DEDUPLICATED FUNCTIONS ============
@@ -163,49 +170,53 @@ validate_client_version() {
 
     version=$(normalize_version "$client" "$version")
 
-    echo "Checking Docker Hub for ${image}:${version}..." >&2
+    echo -e "${UI_MUTED}Checking Docker Hub for ${image}:${version}...${NC}" >&2
 
-    if docker manifest inspect "${image}:${version}" >/dev/null 2>&1; then
-        echo "✓ Found ${image}:${version}" >&2
-        return 0
+    # Handle different container registries
+    if [[ "$image" == ghcr.io/* ]]; then
+        # GitHub Container Registry - use docker manifest inspect as GHCR supports it better
+        if docker manifest inspect "${image}:${version}" >/dev/null 2>&1; then
+            echo -e "${UI_MUTED}✓ Found ${image}:${version}${NC}" >&2
+            return 0
+        else
+            echo -e "${UI_MUTED}✗ Image not found: ${image}:${version}${NC}" >&2
+            return 1
+        fi
     else
-        echo "✗ Image not found: ${image}:${version}" >&2
-        return 1
+        # Docker Hub - use API
+        local repo_name="${image}"
+        if curl -s -f "https://hub.docker.com/v2/repositories/${repo_name}/tags/${version}/" >/dev/null 2>&1; then
+            echo -e "${UI_MUTED}✓ Found ${image}:${version}${NC}" >&2
+            return 0
+        else
+            echo -e "${UI_MUTED}✗ Image not found: ${image}:${version}${NC}" >&2
+            return 1
+        fi
     fi
 }
 
 # Menu functions
 prompt_execution_client() {
-    echo -e "\nSelect Execution Client:" >&2
-    echo "========================" >&2
-    local i=1
+    local client_options=()
     for client in "${EXECUTION_CLIENTS[@]}"; do
-        echo "  $i) ${client^}" >&2
-        ((i++))
+        client_options+=("${client^}")
     done
-    echo >&2
-
-    read -p "Enter choice [1-${#EXECUTION_CLIENTS[@]}]: " choice
-
-    if [[ $choice -ge 1 && $choice -le ${#EXECUTION_CLIENTS[@]} ]]; then
-        echo "${EXECUTION_CLIENTS[$((choice-1))]}"
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Execution Client" "${client_options[@]}"); then
+        echo "${EXECUTION_CLIENTS[$selection]}"
     fi
 }
 
 prompt_consensus_client() {
-    echo -e "\nSelect Consensus Client:" >&2
-    echo "========================" >&2
-    local i=1
+    local client_options=()
     for client in "${CONSENSUS_CLIENTS[@]}"; do
-        echo "  $i) ${client^}" >&2
-        ((i++))
+        client_options+=("${client^}")
     done
-    echo >&2
-
-    read -p "Enter choice [1-${#CONSENSUS_CLIENTS[@]}]: " choice
-
-    if [[ $choice -ge 1 && $choice -le ${#CONSENSUS_CLIENTS[@]} ]]; then
-        echo "${CONSENSUS_CLIENTS[$((choice-1))]}"
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Consensus Client" "${client_options[@]}"); then
+        echo "${CONSENSUS_CLIENTS[$selection]}"
     fi
 }
 

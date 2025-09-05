@@ -3,39 +3,67 @@
 
 # Source dependencies
 source "${NODEBOI_LIB}/clients.sh"
+[[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh"
 
 # Configuration
 CHECK_UPDATES="${CHECK_UPDATES:-true}"
 
+# Safe log viewer with proper Ctrl+C handling
+safe_view_logs() {
+    local log_command="$*"
+    local log_pid
+    
+    # Function to kill logs and return
+    kill_logs_and_return() {
+        echo -e "\n${UI_MUTED}Exiting log view...${NC}"
+        [[ -n "$log_pid" ]] && kill "$log_pid" 2>/dev/null
+        trap - INT  # Reset trap
+        return 0
+    }
+    
+    # Trap SIGINT (Ctrl+C) to cleanup and return to menu
+    trap 'kill_logs_and_return' INT
+    
+    # Start log command in background
+    eval "$log_command" &
+    log_pid=$!
+    
+    # Wait for the process
+    wait "$log_pid" 2>/dev/null
+    
+    # Reset trap
+    trap - INT
+}
+
 check_prerequisites() {
-    echo -e "${GREEN}[INFO]${NC} Checking system prerequisites"
+    echo -e "${UI_MUTED}Checking system prerequisites${NC}"
     local missing_tools=()
     local install_docker=false
 
     for tool in wget curl openssl ufw; do
         if command -v "$tool" &> /dev/null; then
-            echo -e "  $tool: ${GREEN}✓${NC}"
+            echo -e "  ${UI_MUTED}$tool: ${GREEN}✓${NC}"
         else
-            echo -e "  $tool: ${RED}✗${NC}"
+            echo -e "  ${UI_MUTED}$tool: ${RED}✗${NC}"
             missing_tools+=("$tool")
         fi
     done
 
     # Check Docker and Docker Compose v2
     if command -v docker &> /dev/null; then
-        echo -e "  docker: ${GREEN}✓${NC}"
+        echo -e "  ${UI_MUTED}docker: ${GREEN}✓${NC}"
 
         # Check for Docker Compose v2 (comes with Docker)
         if docker compose version &>/dev/null 2>&1; then
-            echo -e "  docker compose: ${GREEN}✓${NC}"
+            echo -e "  ${UI_MUTED}docker compose: ${GREEN}✓${NC}"
         else
-            echo -e "  docker compose: ${RED}✗${NC}"
+            echo -e "  ${UI_MUTED}docker compose: ${RED}✗${NC}"
             echo -e "  ${YELLOW}Docker is installed but Compose v2 is missing${NC}"
             install_docker=true
         fi
     else
-        echo -e "  docker: ${RED}✗${NC}"
-        echo -e "  docker compose: ${RED}✗${NC}"
+        echo -e "  ${UI_MUTED}docker: ${RED}✗${NC}"
+        echo -e "  ${UI_MUTED}docker compose: ${RED}✗${NC}"
         install_docker=true
     fi
 
@@ -45,21 +73,21 @@ check_prerequisites() {
 
         for tool in "${missing_tools[@]}"; do
             case $tool in
-                wget) echo "  • wget - needed for downloading client binaries" ;;
-                curl) echo "  • curl - needed for API calls and version checks" ;;
-                openssl) echo "  • openssl - needed for generating JWT secrets" ;;
-                ufw) echo "  • ufw - firewall management for node security" ;;
+                wget) echo -e "${UI_MUTED}  • wget - needed for downloading client binaries${NC}" ;;
+                curl) echo -e "${UI_MUTED}  • curl - needed for API calls and version checks${NC}" ;;
+                openssl) echo -e "${UI_MUTED}  • openssl - needed for generating JWT secrets${NC}" ;;
+                ufw) echo -e "${UI_MUTED}  • ufw - firewall management for node security${NC}" ;;
             esac
         done
 
-        [[ "$install_docker" == true ]] && echo "  • docker/docker compose v2 - essential for running node containers"
+        [[ "$install_docker" == true ]] && echo -e "${UI_MUTED}  • docker/docker compose v2 - essential for running node containers${NC}"
 
         echo -e "\n${YELLOW}These tools are necessary for running NODEBOI.${NC}"
         read -p "Would you like to install the missing prerequisites now? [y/n]: " -r
         echo
 
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            echo "Installing missing tools..."
+            echo -e "${UI_MUTED}Installing missing tools...${NC}"
 
             sudo apt update
 
@@ -68,13 +96,13 @@ check_prerequisites() {
             fi
 
             if [[ "$install_docker" == true ]]; then
-                echo "Installing Docker with Compose v2 (this may take a few minutes)..."
+                echo -e "${UI_MUTED}Installing Docker with Compose v2 (this may take a few minutes)...${NC}"
                 sudo apt remove -y docker docker-engine docker.io containerd runc docker compose 2>/dev/null || true
                 curl -fsSL https://get.docker.com | sudo sh
                 sudo usermod -aG docker $USER
                 sudo apt install -y docker compose-plugin
                 echo -e "${YELLOW}⚠ Important: You'll need to log out and back in for Docker permissions to take effect.${NC}"
-                echo "Or run: newgrp docker"
+                echo -e "${UI_MUTED}Or run: newgrp docker${NC}"
             fi
 
             echo -e "${GREEN}✓ Prerequisites installed successfully${NC}"
@@ -84,13 +112,13 @@ check_prerequisites() {
             fi
         else
             echo -e "${RED}[ERROR]${NC} Cannot proceed without required tools."
-            echo "To install manually, run:"
-            echo "  sudo apt update && sudo apt install -y ${missing_tools[*]}"
-            [[ "$install_docker" == true ]] && echo "  curl -fsSL https://get.docker.com | sudo sh && sudo apt install -y docker compose-plugin"
+            echo -e "${UI_MUTED}To install manually, run:${NC}"
+            echo -e "${UI_MUTED}  sudo apt update && sudo apt install -y ${missing_tools[*]}${NC}"
+            [[ "$install_docker" == true ]] && echo -e "${UI_MUTED}  curl -fsSL https://get.docker.com | sudo sh && sudo apt install -y docker compose-plugin${NC}"
             return 1
         fi
     else
-        echo -e "${GREEN}✓${NC} All prerequisites satisfied"
+        echo -e "${GREEN}✓${NC} ${UI_MUTED}All prerequisites satisfied${NC}"
     fi
 }
 detect_existing_instances() {
@@ -112,111 +140,18 @@ detect_existing_instances() {
     [[ "$found" == true ]] && echo -e "${YELLOW}Note: Existing instances detected. Ports will be auto-adjusted.${NC}" || echo "  No existing instances found"
     return $([[ "$found" == true ]] && echo 0 || echo 1)
 }
-get_all_used_ports() {
-    local used_ports=""
 
-    # Get system ports from netstat/ss
-    if command -v ss &>/dev/null; then
-        used_ports+=$(ss -tuln 2>/dev/null | awk '/LISTEN/ {print $5}' | grep -oE '[0-9]+$' | sort -u | tr '\n' ' ')
-    else
-        used_ports+=$(netstat -tuln 2>/dev/null | awk '/LISTEN/ {print $4}' | grep -oE '[0-9]+$' | sort -u | tr '\n' ' ')
-    fi
 
-    # Get Docker exposed ports - FIXED to handle ranges
-    local docker_ports=$(docker ps --format "table {{.Ports}}" 2>/dev/null | tail -n +2)
-
-    # Extract single ports
-    used_ports+=" $(echo "$docker_ports" | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
-
-    # Handle port ranges like 30304-30305
-    local ranges=$(echo "$docker_ports" | grep -oE '[0-9]+-[0-9]+' || true)
-    if [[ -n "$ranges" ]]; then
-        while IFS= read -r range; do
-            local start=$(echo "$range" | cut -d'-' -f1)
-            local end=$(echo "$range" | cut -d'-' -f2)
-            for ((port=start; port<=end; port++)); do
-                used_ports+=" $port"
-            done
-        done <<< "$ranges"
-    fi
-
-    # Get ports from all ethnode .env files
-    for env_file in "$HOME"/ethnode*/.env; do
-        [[ -f "$env_file" ]] || continue
-        used_ports+=" $(grep -E '_PORT=' "$env_file" 2>/dev/null | cut -d'=' -f2 | sort -u | tr '\n' ' ')"
-    done
-
-    # Remove duplicates and return
-    echo "$used_ports" | tr ' ' '\n' | sort -nu | tr '\n' ' '
-}
-is_port_available() {
-    local port=$1
-    local used_ports="${2:-}"  # Make second parameter optional with default empty string
-
-    # Check if port is in the used ports list
-    [[ -n "$used_ports" ]] && echo " $used_ports " | grep -q " $port " && return 1
-
-    # Double-check with nc (netcat) if available
-    if command -v nc &>/dev/null; then
-        nc -z 127.0.0.1 "$port" 2>/dev/null && return 1
-    fi
-
-    return 0
-}
-find_available_port() {
-    local base_port=$1
-    local increment="${2:-2}"  # Default to 2 if not provided
-    local used_ports="${3:-}"  # Default to empty if not provided
-    local max_attempts=50
-
-    for ((i=0; i<max_attempts; i++)); do
-        local port=$((base_port + (i * increment)))
-        if is_port_available "$port" "$used_ports"; then
-            echo "$port"
-            return 0
-        fi
-    done
-
-    echo "Error: Could not find available port starting from $base_port" >&2
-    return 1
-}
-verify_ports_available() {
-    local node_dir=$1
-
-    if [[ ! -f "$node_dir/.env" ]]; then
-        return 0
-    fi
-
-    local failed_ports=""
-    local used_ports=$(get_all_used_ports)
-
-    # Extract ports from .env
-    while IFS='=' read -r key value; do
-        if [[ "$key" == *"_PORT"* && -n "$value" ]]; then
-            if ! is_port_available "$value" "$used_ports"; then
-                failed_ports+=" $value"
-            fi
-        fi
-    done < "$node_dir/.env"
-
-    if [[ -n "$failed_ports" ]]; then
-        echo -e "${RED}[ERROR]${NC} These ports are already in use:$failed_ports" >&2
-        echo "Please check for conflicting services or other ethnode instances." >&2
-        return 1
-    fi
-
-    return 0
-}
 safe_docker_stop() {
     local node_name=$1
     local node_dir="$HOME/$node_name"
 
-    echo "Stopping $node_name..."
+    echo -e "${UI_MUTED}Stopping $node_name...${NC}"
     cd "$node_dir" 2>/dev/null || return 1
 
     # Try graceful stop with 30 second timeout
     if ! timeout 30 docker compose down 2>/dev/null; then
-        echo "  Graceful stop failed, forcing stop..."
+        echo -e "${UI_MUTED}  Graceful stop failed, forcing stop...${NC}"
 
         # Get container names and force stop
         local containers=$(docker compose ps -q 2>/dev/null)
@@ -234,30 +169,30 @@ remove_node() {
     local node_name="$1"
     local node_dir="$HOME/$node_name"
 
-    echo "Removing $node_name..." >&2
+    echo -e "${UI_MUTED}Removing $node_name...${NC}" >&2
 
     # Stop and remove containers using safe stop
     if [[ -f "$node_dir/compose.yml" ]]; then
-        echo "  Stopping containers..." >&2
+        echo -e "${UI_MUTED}  Stopping containers...${NC}" >&2
         safe_docker_stop "$node_name"
     fi
 
     # Remove any remaining containers
-    echo "  Checking for remaining containers..." >&2
+    echo -e "${UI_MUTED}  Checking for remaining containers...${NC}" >&2
     local containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep "^${node_name}-" || true)
     if [[ -n "$containers" ]]; then
         echo "$containers" | while read container; do
-            echo "    Removing container: $container" >&2
+            echo -e "${UI_MUTED}    Removing container: $container${NC}" >&2
             docker rm -f "$container" 2>/dev/null || true
         done
     fi
 
     # Remove Docker volumes
-    echo "  Removing volumes..." >&2
+    echo -e "${UI_MUTED}  Removing volumes...${NC}" >&2
     local volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep "^${node_name}" || true)
     if [[ -n "$volumes" ]]; then
         echo "$volumes" | while read volume; do
-            echo "    Removing volume: $volume" >&2
+            echo -e "${UI_MUTED}    Removing volume: $volume${NC}" >&2
             docker volume rm -f "$volume" 2>/dev/null || true
         done
     fi
@@ -267,11 +202,9 @@ remove_node() {
     [[ -d "$node_dir" ]] && sudo rm -rf "$node_dir"
     id "$node_name" &>/dev/null && sudo userdel -r "$node_name" 2>/dev/null || true
 
-    echo "  ✓ $node_name removed successfully" >&2
+    echo -e "${UI_MUTED}  ✓ $node_name removed successfully${NC}" >&2
 }
 remove_nodes_menu() {
-    echo -e "\n${CYAN}${BOLD}Node Removal${NC}\n=============\n"
-
     # List existing nodes
     local nodes=()
     for dir in "$HOME"/ethnode*; do
@@ -279,39 +212,34 @@ remove_nodes_menu() {
     done
 
     if [[ ${#nodes[@]} -eq 0 ]]; then
-        echo "No nodes found to remove."
+        clear
+        print_header
+        print_box "No nodes found to remove." "warning"
         press_enter
         return
     fi
 
-    echo "Existing nodes:"
-    for i in "${!nodes[@]}"; do
-        echo "  $((i+1))) ${nodes[$i]}"
-    done
-    echo "  C) Cancel"
-    echo
-
-    read -p "Enter node number to remove, or C to cancel: " choice
-
-    [[ "${choice^^}" == "C" ]] && { echo "Removal cancelled."; return; }
-
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#nodes[@]} ]]; then
-        local node_to_remove="${nodes[$((choice-1))]}"
-
-        echo -e "\nWill remove: $node_to_remove\n"
-        read -p "Are you sure? This cannot be undone! [y/n]: " -r
-        echo
-
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            remove_node "$node_to_remove"
-            echo -e "\n${GREEN}✓ Removal complete${NC}"
-        else
-            echo "Removal cancelled."
+    # Add cancel option
+    local menu_options=("${nodes[@]}" "Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Node to Remove" "${menu_options[@]}"); then
+        # Check if user selected cancel
+        if [[ $selection -eq ${#nodes[@]} ]]; then
+            return
         fi
-    else
-        echo "Invalid selection."
+        
+        local node_to_remove="${nodes[$selection]}"
+        
+        if fancy_confirm "Remove $node_to_remove? This cannot be undone!" "n"; then
+            echo -e "\n${UI_MUTED}Removing $node_to_remove...${NC}\n"
+            remove_node "$node_to_remove"
+            echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
+        else
+            print_box "Removal cancelled" "info"
+        fi
     fi
-
+    
     press_enter
 }
 check_node_health() {
@@ -353,49 +281,27 @@ check_node_health() {
         cons_version=$(grep "GRANDINE_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     fi
 
-    # Check for updates
-  if [[ "$CHECK_UPDATES" == "true" ]]; then
-    local exec_client_lower=$(echo "$exec_client" | tr '[:upper:]' '[:lower:]')
-    local cons_client_lower=$(echo "$cons_client" | tr '[:upper:]' '[:lower:]')
+    # Initialize update indicators 
+    local exec_update_indicator=""
+    local cons_update_indicator=""
 
-    if [[ -n "$exec_client_lower" ]] && [[ "$exec_client_lower" != "unknown" ]]; then
-        local latest_exec=$(get_latest_version "$exec_client_lower" 2>/dev/null)
-        if [[ -n "$latest_exec" ]] && [[ -n "$exec_version" ]]; then
-            local exec_version_normalized=${exec_version#v}
-            local latest_exec_normalized=${latest_exec#v}
-            if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
-                # Check if Docker image actually exists before showing arrow
-                if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
-                    exec_update_indicator=" ${YELLOW}⬆${NC}"
-                fi
-            fi
-        fi
-    fi
-
-    if [[ -n "$cons_client_lower" ]] && [[ "$cons_client_lower" != "unknown" ]]; then
-        local latest_cons=$(get_latest_version "$cons_client_lower" 2>/dev/null)
-        if [[ -n "$latest_cons" ]] && [[ -n "$cons_version" ]]; then
-            local cons_version_normalized=${cons_version#v}
-            local latest_cons_normalized=${latest_cons#v}
-            if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
-                # Check if Docker image actually exists before showing arrow
-                if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
-                    cons_update_indicator=" ${YELLOW}⬆${NC}"
-                fi
-            fi
-        fi
-    fi
-fi
-
-    # Check container status
+    # Check container status - check if core services are running
     local containers_running=false
-    cd "$node_dir" 2>/dev/null && docker compose ps --services --filter status=running 2>/dev/null | grep -q . && containers_running=true
+    if cd "$node_dir" 2>/dev/null; then
+        # Check if execution and consensus services are running (core services)
+        local running_services=$(docker compose ps --services --filter status=running 2>/dev/null)
+        if echo "$running_services" | grep -q "execution" && echo "$running_services" | grep -q "consensus"; then
+            containers_running=true
+        fi
+    fi
 
     # Initialize status variables
     local el_check="${RED}✗${NC}"
     local cl_check="${RED}✗${NC}"
+    local mevboost_check="${RED}✗${NC}"
     local el_sync_status=""
     local cl_sync_status=""
+    local mevboost_version="unknown"
 
     if [[ "$containers_running" == true ]]; then
         # Check execution client health and sync
@@ -414,6 +320,20 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
         if [[ -n "$sync_response" ]] && echo "$sync_response" | grep -q '"result"'; then
             el_check="${GREEN}✓${NC}"
+            
+            # Get actual running version
+            local version_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
+                --max-time 2 2>/dev/null)
+            if [[ -n "$version_response" ]] && echo "$version_response" | grep -q '"result"'; then
+                local client_version=$(echo "$version_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+                if [[ -n "$client_version" ]]; then
+                    # Extract version number from client string (e.g., "Reth/v1.6.0" -> "v1.6.0")
+                    exec_version=$(echo "$client_version" | grep -o 'v[0-9][0-9.]*' || echo "$client_version" | grep -o '[0-9][0-9.]*')
+                fi
+            fi
+            
             # Check if syncing (result is not false)
             if ! echo "$sync_response" | grep -q '"result":false'; then
                 el_sync_status=" (Syncing)"
@@ -426,6 +346,9 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
                 if echo "$block_response" | grep -q '"result":"0x0"'; then
                     el_sync_status=" (Waiting)"
+                else
+                    # Synced - don't show status
+                    el_sync_status=""
                 fi
             fi
         elif curl -s -X POST "http://${check_host}:${el_rpc}" \
@@ -441,17 +364,47 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
         if [[ -n "$cl_sync_response" ]]; then
             cl_check="${GREEN}✓${NC}"
-            # Check for various states
-            if echo "$cl_sync_response" | grep -q '"el_offline":true'; then
-                cl_sync_status=" (EL Offline)"
-            elif echo "$cl_sync_response" | grep -q '"is_syncing":true'; then
+            
+            # Get actual running version
+            local cl_version_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null)
+            if [[ -n "$cl_version_response" ]] && echo "$cl_version_response" | grep -q '"data"'; then
+                local client_version=$(echo "$cl_version_response" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+                if [[ -n "$client_version" ]]; then
+                    # Extract version number from client string (e.g., "teku/25.6.0" -> "25.6.0")
+                    cons_version=$(echo "$client_version" | grep -o 'v[0-9][0-9.]*' || echo "$client_version" | grep -o '[0-9][0-9.]*' | head -1)
+                fi
+            fi
+            
+            # Check for various states - prioritize syncing over EL offline
+            if echo "$cl_sync_response" | grep -q '"is_syncing":true'; then
                 cl_sync_status=" (Syncing)"
-            elif echo "$cl_sync_response" | grep -q '"is_optimistic":true'; then
-                cl_sync_status=" (Optimistic)"
+            elif echo "$cl_sync_response" | grep -q '"el_offline":true'; then
+                # Only show EL Offline if not syncing (indicates real connectivity issue)
+                cl_sync_status=" (EL Offline)"
+            else
+                # Synced or optimistic - don't show status
+                cl_sync_status=""
             fi
         elif curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null | grep -q '"data"'; then
             cl_check="${GREEN}✓${NC}"
             cl_sync_status=" (Starting)"
+        fi
+
+        # Check MEV-boost health using the configured port
+        local mevboost_port=$(grep "MEVBOOST_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+        local mevboost_response=""
+        if [[ -n "$mevboost_port" ]]; then
+            mevboost_response=$(curl -s "http://${check_host}:${mevboost_port}/eth/v1/builder/status" --max-time 2 2>/dev/null)
+        fi
+        if [[ -n "$mevboost_response" ]]; then
+            mevboost_check="${GREEN}✓${NC}"
+            # Try to extract MEV-boost version from docker container
+            local container_name=$(docker ps --format "table {{.Names}}" | grep "$node_name-mevboost" | head -1)
+            if [[ -n "$container_name" ]]; then
+                # Extract version from image tag (e.g., flashbots/mev-boost:1.9 -> 1.9)
+                mevboost_version=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null | grep -o ':[0-9][0-9.]*$' | cut -c2- || echo "latest")
+                [[ -z "$mevboost_version" ]] && mevboost_version="latest"
+            fi
         fi
     fi
 
@@ -471,22 +424,69 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         access_indicator=" ${YELLOW}[L]${NC}"  # Local network
     fi
 
+    # Check for updates - now after we have real versions from APIs
+    if [[ "$CHECK_UPDATES" == "true" ]]; then
+        local exec_client_lower=$(echo "$exec_client" | tr '[:upper:]' '[:lower:]')
+        local cons_client_lower=$(echo "$cons_client" | tr '[:upper:]' '[:lower:]')
+
+        if [[ -n "$exec_client_lower" ]] && [[ "$exec_client_lower" != "unknown" ]]; then
+            local latest_exec=$(get_latest_version "$exec_client_lower" 2>/dev/null)
+            if [[ -n "$latest_exec" ]] && [[ -n "$exec_version" ]]; then
+                local exec_version_normalized=$(normalize_version "$exec_client_lower" "$exec_version")
+                local latest_exec_normalized=$(normalize_version "$exec_client_lower" "$latest_exec")
+                if [[ "$latest_exec_normalized" != "$exec_version_normalized" ]] && [[ -n "$latest_exec_normalized" ]]; then
+                    exec_update_indicator=" ${YELLOW}⬆${NC}"
+                fi
+            fi
+        fi
+
+        if [[ -n "$cons_client_lower" ]] && [[ "$cons_client_lower" != "unknown" ]]; then
+            local latest_cons=$(get_latest_version "$cons_client_lower" 2>/dev/null)
+            if [[ -n "$latest_cons" ]] && [[ -n "$cons_version" ]]; then
+                local cons_version_normalized=$(normalize_version "$cons_client_lower" "$cons_version")
+                local latest_cons_normalized=$(normalize_version "$cons_client_lower" "$latest_cons")
+                if [[ "$latest_cons_normalized" != "$cons_version_normalized" ]] && [[ -n "$latest_cons_normalized" ]]; then
+                    cons_update_indicator=" ${YELLOW}⬆${NC}"
+                fi
+            fi
+        fi
+
+        # Check MEV-boost updates if it's running
+        if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]] && [[ "$mevboost_version" != "unknown" ]]; then
+            local latest_mevboost=$(get_latest_version "mevboost" 2>/dev/null)
+            if [[ -n "$latest_mevboost" ]] && [[ -n "$mevboost_version" ]]; then
+                local mevboost_version_normalized=$(normalize_version "mevboost" "$mevboost_version")
+                local latest_mevboost_normalized=$(normalize_version "mevboost" "$latest_mevboost")
+                if [[ "$latest_mevboost_normalized" != "$mevboost_version_normalized" ]] && [[ -n "$latest_mevboost_normalized" ]]; then
+                    mevboost_update_indicator=" ${YELLOW}⬆${NC}"
+                fi
+            fi
+        fi
+    fi
+
     # Display status with sync info and correct endpoints
     if [[ "$containers_running" == true ]]; then
         echo -e "  ${GREEN}●${NC} $node_name ($network)$access_indicator"
 
         # Execution client line
-        printf "     %b %-20s (%s)%b\t\thttp://%s:%s\n" \
+        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
             "$el_check" "${exec_client}${el_sync_status}" "$exec_version" "$exec_update_indicator" "$endpoint_host" "$el_rpc"
 
         # Consensus client line
-        printf "     %b %-20s (%s)%b\t\thttp://%s:%s\n" \
+        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
             "$cl_check" "${cons_client}${cl_sync_status}" "$cons_version" "$cons_update_indicator" "$endpoint_host" "$cl_rest"
+
+        # MEV-boost line (only show if it's running)
+        if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]]; then
+            printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
+                "$mevboost_check" "MEV-boost" "$mevboost_version" "$mevboost_update_indicator" "$endpoint_host" "$mevboost_port"
+        fi
     else
         echo -e "  ${RED}●${NC} $node_name ($network) - ${RED}Stopped${NC}"
         printf "     %-20s (%s)%b\n" "$exec_client" "$exec_version" "$exec_update_indicator"
         printf "     %-20s (%s)%b\n" "$cons_client" "$cons_version" "$cons_update_indicator"
     fi
+
     echo
 }
 print_dashboard() {
@@ -495,121 +495,23 @@ print_dashboard() {
 
     local found=false
     for dir in "$HOME"/ethnode*; do
-        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+        if [[ -d "$dir" && -f "$dir/.env" && -f "$dir/compose.yml" ]]; then
             found=true
             check_node_health "$dir"
         fi
     done
 
     if [[ "$found" == false ]]; then
-        echo "  No nodes installed\n"
+        echo -e "${UI_MUTED}  No nodes installed${NC}\n"
     else
-        echo "─────────────────────────────"
-        echo -e "Legend: ${GREEN}●${NC} Running | ${RED}●${NC} Stopped | ${GREEN}✓${NC} Healthy | ${RED}✗${NC} Unhealthy | ${YELLOW}⬆${NC} Update"
-        echo -e "Access: ${GREEN}[M]${NC} My machine | ${YELLOW}[L]${NC} Local network | ${RED}[A]${NC} All networks"
+        echo -e "${UI_MUTED}─────────────────────────────${NC}"
+        echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC} ${UI_MUTED}Update${NC}"
+        echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${YELLOW}[L]${NC} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All networks${NC}"
         echo
     fi
 }
 
-# Print plugin service dashboard
-print_plugin_dashboard() {
-    # Wrap everything in a subshell to prevent any failures from exiting the main script
-    (
-        local found_plugins=false
-        
-        # Check for SSV operators - use find to avoid glob issues
-        if [[ -d "$HOME" ]]; then
-            while IFS= read -r dir; do
-                if [[ -f "$dir/.env" ]]; then
-                    if [[ "$found_plugins" == false ]]; then
-                        echo -e "${BOLD}Plugin Services${NC}\n===============\n"
-                        found_plugins=true
-                    fi
-                    check_plugin_status "$dir" 2>/dev/null || true
-                fi
-            done < <(find "$HOME" -maxdepth 1 -type d -name "ssv*" 2>/dev/null || true)
-        fi
-        
-        # Check for Vero monitor
-        if [[ -d "$HOME/vero-monitor" && -f "$HOME/vero-monitor/.env" ]]; then
-            if [[ "$found_plugins" == false ]]; then
-                echo -e "${BOLD}Plugin Services${NC}\n===============\n"
-                found_plugins=true
-            fi
-            check_plugin_status "$HOME/vero-monitor" 2>/dev/null || true
-        fi
-        
-        [[ "$found_plugins" == true ]] && echo
-    ) 2>/dev/null || true
-    # Function always succeeds
-    return 0
-}
-# Check individual plugin status (simplified)
-check_plugin_status() {
-    local plugin_dir=$1
-    local plugin_name=$(basename "$plugin_dir")
-    local plugin_type=""
-    
-    # Determine plugin type
-    [[ "$plugin_name" =~ ^ssv ]] && plugin_type="SSV"
-    [[ "$plugin_name" == "vero-monitor" ]] && plugin_type="Vero"
-    
-    # Check if running
-    local status="${RED}●${NC}"
-    if cd "$plugin_dir" 2>/dev/null && \
-       docker compose ps --services --filter status=running 2>/dev/null | grep -q .; then
-        status="${GREEN}●${NC}"
-    fi
-    
-    # Display based on type
-    case "$plugin_type" in
-        SSV)
-            local target=$(grep "^TARGET_NODE=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
-            echo -e "  $status $plugin_name → $target"
-            ;;
-        Vero)
-            local port=$(grep "^VERO_PORT=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
-            local nodes=$(grep "^MONITORED_NODES=" "$plugin_dir/.env" 2>/dev/null | cut -d'=' -f2)
-            echo -e "  $status Vero Monitor (port $port)"
-            [[ -n "$nodes" ]] && echo "       Monitoring: $nodes"
-            ;;
-    esac
-}
 
-# Extended node details to show connected plugins
-show_node_details_extended() {
-    # Call original function
-    show_node_details
-    
-    # Add plugin connections
-    echo -e "\n${BOLD}Plugin Connections:${NC}"
-    for dir in "$HOME"/ethnode*; do
-        if [[ -d "$dir" && -f "$dir/.env" ]]; then
-            local node_name=$(basename "$dir")
-            echo -e "\n  $node_name:"
-            
-            # Find SSV operators connected to this node
-            for ssv_dir in "$HOME"/ssv*; do
-                if [[ -f "$ssv_dir/.env" ]]; then
-                    local target=$(grep "^TARGET_NODE=" "$ssv_dir/.env" 2>/dev/null | cut -d'=' -f2)
-                    if [[ "$target" == "$node_name" ]]; then
-                        echo "    • $(basename "$ssv_dir") (SSV operator)"
-                    fi
-                fi
-            done
-            
-            # Check if monitored by Vero
-            if [[ -f "$HOME/vero-monitor/.env" ]]; then
-                local monitored=$(grep "^MONITORED_NODES=" "$HOME/vero-monitor/.env" 2>/dev/null | cut -d'=' -f2)
-                if [[ "$monitored" == *"$node_name"* ]]; then
-                    echo "    • Vero monitor"
-                fi
-            fi
-        fi
-    done
-    
-    press_enter
-}
 
 show_node_details() {
     echo -e "\n${CYAN}${BOLD}Detailed Node Status${NC}\n===================="
@@ -632,17 +534,17 @@ show_node_details() {
     local clients=$(detect_node_clients "$compose_file")
     local exec_client="${clients%:*}"
     local cons_client="${clients#*:}"
-            echo "  Network: $network"
-            echo "  Clients: $exec_client / $cons_client"
-            echo "  Directory: $dir"
+            echo -e "${UI_MUTED}  Network: $network${NC}"
+            echo -e "${UI_MUTED}  Clients: $exec_client / $cons_client${NC}"
+            echo -e "${UI_MUTED}  Directory: $dir${NC}"
 
             # Check containers
             if cd "$dir" 2>/dev/null; then
                 local services=$(docker compose ps --format "table {{.Service}}\t{{.Status}}" 2>/dev/null | tail -n +2)
                 if [[ -n "$services" ]]; then
-                    echo "  Services:"
+                    echo -e "${UI_MUTED}  Services:${NC}"
                     while IFS= read -r line; do
-                        echo "    $line"
+                        echo -e "${UI_MUTED}    $line${NC}"
                     done <<< "$services"
 
                     # Check sync status
@@ -665,152 +567,684 @@ show_node_details() {
             local el_p2p=$(grep "EL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
             local cl_p2p=$(grep "CL_P2P_PORT=" "$dir/.env" | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
 
-            echo "  Endpoints:"
-            echo "    Execution RPC:  http://${check_host}:${el_rpc}"
-            echo "    Execution WS:   ws://localhost:${el_ws}"
-            echo "    Consensus REST: http://${check_host}:${cl_rest}"
-            echo "  P2P Ports (need to be forwarded in your router):"
-            echo -e "    Execution P2P:  ${YELLOW}${el_p2p}${NC}/TCP+UDP"
-            echo -e "    Consensus P2P:  ${YELLOW}${cl_p2p}${NC}/TCP+UDP"
+            echo -e "${UI_MUTED}  Endpoints:${NC}"
+            echo -e "${UI_MUTED}    Execution RPC:  http://${check_host}:${el_rpc}${NC}"
+            echo -e "${UI_MUTED}    Execution WS:   ws://localhost:${el_ws}${NC}"
+            echo -e "${UI_MUTED}    Consensus REST: http://${check_host}:${cl_rest}${NC}"
+            echo -e "${UI_MUTED}  P2P Ports (need to be forwarded in your router):${NC}"
+            echo -e "${UI_MUTED}    Execution P2P:  ${YELLOW}${el_p2p}${NC}/TCP+UDP${NC}"
+            echo -e "${UI_MUTED}    Consensus P2P:  ${YELLOW}${cl_p2p}${NC}/TCP+UDP${NC}"
         fi
     done
 
     press_enter
 }
 manage_node_state() {
-    echo -e "\n${CYAN}${BOLD}Manage Nodes${NC}\n============\n"
-
     local nodes=()
+    local node_status=()
+    
+    # Get nodes and their status
     for dir in "$HOME"/ethnode*; do
-        [[ -d "$dir" && -f "$dir/.env" ]] && nodes+=("$(basename "$dir")")
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local node_name=$(basename "$dir")
+            nodes+=("$node_name")
+            
+            # Check if running
+            if cd "$dir" 2>/dev/null && docker compose ps --services --filter status=running 2>/dev/null | grep -q .; then
+                node_status+=("Running")
+            else
+                node_status+=("Stopped")
+            fi
+        fi
     done
 
     if [[ ${#nodes[@]} -eq 0 ]]; then
-        echo "No nodes found."
+        clear
+        print_header
+        print_box "No nodes found." "warning"
         press_enter
         return
     fi
 
-    echo "Select node:"
+    # Create enhanced menu options with status
+    local menu_options=()
     for i in "${!nodes[@]}"; do
-        local node_dir="$HOME/${nodes[$i]}"
-        local status="${RED}Stopped${NC}"
-
-        # Check if running
-        if cd "$node_dir" 2>/dev/null && docker compose ps --services --filter status=running 2>/dev/null | grep -q .; then
-            status="${GREEN}Running${NC}"
-        fi
-
-        echo -e "  $((i+1))) ${nodes[$i]} [$status]"  # FIXED: Added -e flag here
+        local status_color="${RED}"
+        [[ "${node_status[$i]}" == "Running" ]] && status_color="${GREEN}"
+        menu_options+=("${nodes[$i]} [${node_status[$i]}]")
     done
-    echo "  A) Start all stopped nodes"
-    echo "  S) Stop all running nodes"
-    echo "  C) Cancel"
-    echo
+    menu_options+=("Start all stopped nodes" "Stop all running nodes" "Cancel")
 
-    read -p "Enter choice: " choice
-    [[ "${choice^^}" == "C" ]] && return
-
-    # Handle "all" options
-    if [[ "${choice^^}" == "A" ]]; then
-        for node_name in "${nodes[@]}"; do
+    local selection
+    if selection=$(fancy_select_menu "Manage Nodes" "${menu_options[@]}"); then
+        local total_nodes=${#nodes[@]}
+        
+        if [[ $selection -eq $((total_nodes)) ]]; then
+            # Start all stopped
+            echo -e "\n${YELLOW}Starting all stopped nodes...${NC}\n"
+            for i in "${!nodes[@]}"; do
+                if [[ "${node_status[$i]}" == "Stopped" ]]; then
+                    echo -e "${UI_MUTED}Starting ${nodes[$i]}...${NC}"
+                    cd "$HOME/${nodes[$i]}" && docker compose up -d > /dev/null 2>&1
+                fi
+            done
+            print_box "All stopped nodes started" "success"
+            
+        elif [[ $selection -eq $((total_nodes + 1)) ]]; then
+            # Stop all running
+            echo -e "\n${UI_MUTED}Stopping all running nodes...${NC}\n"
+            for i in "${!nodes[@]}"; do
+                if [[ "${node_status[$i]}" == "Running" ]]; then
+                    safe_docker_stop "${nodes[$i]}"
+                fi
+            done
+            print_box "All running nodes stopped" "success"
+            
+        elif [[ $selection -eq $((total_nodes + 2)) ]]; then
+            # Cancel
+            return
+            
+        else
+            # Individual node selected
+            local node_name="${nodes[$selection]}"
             local node_dir="$HOME/$node_name"
-            if ! (cd "$node_dir" 2>/dev/null && docker compose ps --services --filter status=running 2>/dev/null | grep -q .); then
-                echo "Starting $node_name..."
-                cd "$node_dir" && docker compose up -d
+            
+            local action_options=(
+                "Start"
+                "Stop"
+                "View logs (live)"
+                "View logs (last 100 lines)"
+                "Cancel"
+            )
+            
+            local action_selection
+            if action_selection=$(fancy_select_menu "Actions for $node_name" "${action_options[@]}"); then
+                case $action_selection in
+                    0)
+                        echo -e "\n${YELLOW}Starting $node_name...${NC}"
+                        cd "$node_dir" && docker compose up -d > /dev/null 2>&1
+                        print_box "$node_name started" "success"
+                        ;;
+                    1)
+                        echo -e "\n${UI_MUTED}Stopping $node_name...${NC}"
+                        safe_docker_stop "$node_name"
+                        print_box "$node_name stopped" "success"
+                        ;;
+                    2)
+                        clear
+                        print_header
+                        print_dashboard
+                        echo -e "${BOLD}Live logs for $node_name${NC} (Ctrl+C to exit and return to menu)\n"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        ;;
+                    3)
+                        clear
+                        print_header
+                        echo -e "${BOLD}Recent logs for $node_name${NC}\n"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        ;;
+                    4)
+                        return
+                        ;;
+                esac
             fi
-        done
-        echo -e "${GREEN}✓ All stopped nodes started${NC}"
-        press_enter
-        return
-    elif [[ "${choice^^}" == "S" ]]; then
-        for node_name in "${nodes[@]}"; do
-            if cd "$HOME/$node_name" 2>/dev/null && docker compose ps --services --filter status=running 2>/dev/null | grep -q .; then
-                safe_docker_stop "$node_name"
-            fi
-        done
-        echo -e "${GREEN}✓ All running nodes stopped${NC}"
-        press_enter
-        return
-    fi
-
-    # Handle single node
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#nodes[@]} ]]; then
-        local node_name="${nodes[$((choice-1))]}"
-        local node_dir="$HOME/$node_name"
-
-        echo -e "\n${BOLD}Actions for $node_name:${NC}"
-        echo "  1) Start"
-        echo "  2) Stop"
-        echo "  3) Restart"
-        echo "  4) View logs (live)"
-        echo "  5) View logs (last 100 lines)"
-        echo "  C) Cancel"
-        echo
-
-        read -p "Enter action: " action
-
-        case $action in
-            1)
-                echo "Starting $node_name..."
-                cd "$node_dir" && docker compose up -d
-                echo -e "${GREEN}✓ Started${NC}"
-                ;;
-            2)
-                safe_docker_stop "$node_name"
-                echo -e "${GREEN}✓ Stopped${NC}"
-                ;;
-            3)
-                echo "Restarting $node_name..."
-                safe_docker_stop "$node_name"
-                cd "$node_dir" && docker compose up -d
-                echo -e "${GREEN}✓ Restarted${NC}"
-                ;;
-            4)
-                echo "Showing live logs (Ctrl+C to exit)..."
-                cd "$node_dir" && docker compose logs -f --tail=50
-                ;;
-            5)
-                cd "$node_dir" && docker compose logs --tail=100
-                ;;
-            *)
-                return
-                ;;
-        esac
+        fi
     fi
 
     press_enter
 }
 
+update_system() {
+    clear
+    print_header
+    
+    echo -e "\n${CYAN}${BOLD}System Update${NC}"
+    echo "============="
+    echo
+    echo "This will update your Linux system packages (apt update && apt upgrade)."
+    echo "This may take several minutes depending on available updates."
+    echo
+    
+    local update_options=("Continue with update" "Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "System Update" "${update_options[@]}"); then
+        case $selection in
+            0) # Continue with system update
+                clear
+                print_header
+                        
+                echo -e "\n${CYAN}${BOLD}System Update in Progress${NC}"
+                    echo "========================="
+                    echo
+                    
+                    echo -e "${CYAN}Step 1/4:${NC} Updating package lists..."
+                    if sudo apt-get update 2>&1 | while IFS= read -r line; do
+                        echo "  $line"
+                    done; then
+                        echo -e "${GREEN}  ✓ Package lists updated successfully${NC}\n"
+                        
+                        echo -e "${CYAN}Step 2/4:${NC} Upgrading packages (dist-upgrade)..."
+                        if sudo apt-get dist-upgrade -y 2>&1 | while IFS= read -r line; do
+                            echo "  $line"
+                        done; then
+                            echo -e "${GREEN}  ✓ Packages upgraded successfully${NC}\n"
+                            
+                            echo -e "${CYAN}Step 3/4:${NC} Removing unused packages..."
+                            if sudo apt-get autoremove -y 2>&1 | while IFS= read -r line; do
+                                echo "  $line"
+                            done; then
+                                echo -e "${GREEN}  ✓ Unused packages removed${NC}\n"
+                                
+                                echo -e "${CYAN}Step 4/4:${NC} Cleaning package cache..."
+                                if sudo apt-get autoclean 2>&1 | while IFS= read -r line; do
+                                    echo "  $line"
+                                done; then
+                                    echo -e "${GREEN}  ✓ Package cache cleaned${NC}\n"
+                                    echo -e "\n${GREEN}${BOLD}✓ System update completed successfully${NC}\n"
+                            
+                            # Check if reboot is required
+                            if [[ -f /var/run/reboot-required ]]; then
+                                echo -e "${YELLOW}${BOLD}Reboot Required:${NC}"
+                                echo -e "${UI_MUTED}=================${NC}"
+                                if [[ -f /var/run/reboot-required.pkgs ]]; then
+                                    echo -e "${UI_MUTED}The following packages require a reboot:${NC}"
+                                    cat /var/run/reboot-required.pkgs | while read pkg; do
+                                        echo -e "${UI_MUTED}  • $pkg${NC}"
+                                    done
+                                else
+                                    echo -e "${UI_MUTED}System reboot is required to complete the update.${NC}"
+                                fi
+                                echo
+                                
+                                print_box "System reboot recommended to complete update" "warning"
+                                
+                                local reboot_options=("Reboot now" "Reboot later")
+                                local reboot_choice
+                                if reboot_choice=$(fancy_select_menu "Reboot Required" "${reboot_options[@]}"); then
+                                    case $reboot_choice in
+                                        0)
+                                            echo -e "\n${YELLOW}Rebooting system...${NC}"
+                                            sleep 2
+                                            sudo reboot
+                                            ;;
+                                        1)
+                                            print_box "Please reboot manually when convenient" "info"
+                                            ;;
+                                    esac
+                                fi
+                            else
+                                echo -e "${UI_MUTED}System update complete - no reboot required${NC}\n"
+                            fi
+                        else
+                            print_box "Failed to clean package cache" "error"
+                        fi
+                        else
+                            print_box "Failed to remove unused packages" "error"
+                        fi
+                    else
+                        print_box "Package upgrade failed" "error"
+                    fi
+                else
+                    print_box "Failed to update package lists" "error"
+                fi
+                
+                press_enter
+                ;;
+            1) # Cancel
+                return
+                ;;
+        esac
+    else
+        return  # User pressed 'q' - go back
+    fi
+}
+
 update_nodeboi() {
     clear
     print_header
-    echo -e "${BOLD}Update NODEBOI${NC}\n==============="
-    echo
-    echo "This will update NODEBOI to the latest version from GitHub."
-    echo
-    read -p "Do you want to continue? (y/n): " -r
-    echo
-
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "Updating NODEBOI..."
-        cd "$HOME/.nodeboi"
-        
-        # Always ignore file permission changes
-        git config core.fileMode false
-        
-        if git pull origin main; then
-            echo -e "\n${GREEN}✓ NODEBOI updated successfully${NC}"
-            echo -e "${CYAN}Restarting NODEBOI...${NC}\n"
-            sleep 2
-            exec "$0"
-        else
-            echo -e "${RED}[ERROR]${NC} Update failed. Try reinstalling:"
-            echo "wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/install.sh | bash"
-        fi
-    else
-        echo "Update cancelled."
-    fi
     
-    press_enter
+    echo -e "\n${CYAN}${BOLD}Update NODEBOI${NC}"
+    echo -e "${UI_MUTED}===============${NC}"
+    echo
+    echo -e "${UI_MUTED}This will update NODEBOI to the latest version from GitHub.${NC}"
+    echo
+    
+    local update_options=("Continue with update" "Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "Update NODEBOI" "${update_options[@]}"); then
+        case $selection in
+            0) # continue with update
+                clear
+                print_header
+                        
+                echo -e "\n${CYAN}${BOLD}NODEBOI Update in Progress${NC}"
+                echo -e "${UI_MUTED}==========================${NC}"
+                echo
+                
+                cd "$HOME/.nodeboi"
+                
+                # Always ignore file permission changes
+                git config core.fileMode false
+                
+                echo -e "${CYAN}Updating from GitHub...${NC}"
+                if git pull origin main; then
+                    print_box "NODEBOI updated successfully" "success"
+                    echo -e "\n${UI_MUTED}Restarting NODEBOI...${NC}"
+                    sleep 2
+                    exec "$0"
+                else
+                    print_box "Update failed" "error"
+                    echo -e "${UI_MUTED}Try reinstalling:${NC}"
+                    echo -e "${UI_MUTED}wget -qO- https://raw.githubusercontent.com/Cryptizer69/nodeboi/main/install.sh | bash${NC}"
+                    press_enter
+                fi
+                ;;
+            1) # cancel
+                return
+                ;;
+        esac
+    else
+        return  # User pressed 'q' - go back
+    fi
+}
+
+# Enhanced log viewing system
+view_logs_menu() {
+    while true; do
+        local log_options=(
+            "View logs for specific node"
+            "View logs for all nodes (consolidated)"
+            "View logs by service type"
+            "Split-screen log viewer (all clients)"
+            "Follow logs (live) - specific node"
+            "Follow logs (live) - all nodes"
+            "Back to manage nodes menu"
+        )
+
+        local selection
+        if selection=$(fancy_select_menu "Log Viewer" "${log_options[@]}"); then
+            case $selection in
+                0) view_single_node_logs ;;
+                1) view_all_nodes_logs ;;
+                2) view_logs_by_service ;;
+                3) view_split_screen_logs ;;
+                4) follow_single_node_logs ;;
+                5) follow_all_nodes_logs ;;
+                6) return ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
+# View logs for a specific node
+view_single_node_logs() {
+    local nodes=($(get_node_list))
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        print_box "No nodes found" "error"
+        press_enter
+        return
+    fi
+
+    local node_options=()
+    for node in "${nodes[@]}"; do
+        node_options+=("$node")
+    done
+    node_options+=("Back")
+
+    local selection
+    if selection=$(fancy_select_menu "Select Node" "${node_options[@]}"); then
+        if [[ $selection -eq ${#node_options[@]}-1 ]]; then
+            return
+        fi
+        
+        local selected_node="${nodes[$selection]}"
+        local node_dir="$HOME/$selected_node"
+        
+        if [[ -d "$node_dir" ]]; then
+            # Show log options for the selected node
+            local log_type_options=(
+                "Recent logs (last 100 lines)"
+                "Recent logs (last 200 lines)"
+                "Error logs only"
+                "All logs"
+                "Back"
+            )
+            
+            local log_selection
+            if log_selection=$(fancy_select_menu "Log Type for $selected_node" "${log_type_options[@]}"); then
+                case $log_selection in
+                    0)
+                        clear
+                        print_header
+                        echo -e "${BOLD}Recent logs for $selected_node${NC} (last 100 lines)\n"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        ;;
+                    1)
+                        clear
+                        print_header
+                        echo -e "${BOLD}Recent logs for $selected_node${NC} (last 200 lines)\n"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        ;;
+                    2)
+                        clear
+                        print_header
+                        echo -e "${BOLD}Error logs for $selected_node${NC}\n"
+                        cd "$node_dir" && docker compose logs --tail=20 | grep -i "error\|warn\|fail\|panic\|fatal"
+                        ;;
+                    3)
+                        clear
+                        print_header
+                        echo -e "${BOLD}All logs for $selected_node${NC}\n"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        ;;
+                    4)
+                        return
+                        ;;
+                esac
+                press_enter
+            fi
+        fi
+    fi
+}
+
+# View consolidated logs for all nodes
+view_all_nodes_logs() {
+    local nodes=($(get_node_list))
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        print_box "No nodes found" "error"
+        press_enter
+        return
+    fi
+
+    local log_options=(
+        "Recent logs from all nodes (last 50 lines each)"
+        "Error logs from all nodes"
+        "Status summary + recent logs"
+        "Back"
+    )
+
+    local selection
+    if selection=$(fancy_select_menu "All Nodes Log View" "${log_options[@]}"); then
+        case $selection in
+            0)
+                clear
+                print_header
+                echo -e "${BOLD}Recent logs from all nodes${NC} (last 50 lines each)\n"
+                for node in "${nodes[@]}"; do
+                    local node_dir="$HOME/$node"
+                    if [[ -d "$node_dir" ]]; then
+                        echo -e "${CYAN}${BOLD}=== $node ===${NC}"
+                        cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+                        echo
+                    fi
+                done
+                ;;
+            1)
+                clear
+                print_header
+                echo -e "${BOLD}Error logs from all nodes${NC}\n"
+                for node in "${nodes[@]}"; do
+                    local node_dir="$HOME/$node"
+                    if [[ -d "$node_dir" ]]; then
+                        echo -e "${CYAN}${BOLD}=== $node (Errors) ===${NC}"
+                        local error_logs=$(cd "$node_dir" && docker compose logs | grep -i "error\|warn\|fail\|panic\|fatal")
+                        if [[ -n "$error_logs" ]]; then
+                            echo "$error_logs"
+                        else
+                            echo -e "${GREEN}No errors found${NC}"
+                        fi
+                        echo
+                    fi
+                done
+                ;;
+            2)
+                clear
+                print_header
+                echo -e "${BOLD}Node Status Summary + Recent Logs${NC}\n"
+                for node in "${nodes[@]}"; do
+                    local node_dir="$HOME/$node"
+                    if [[ -d "$node_dir" ]]; then
+                        echo -e "${CYAN}${BOLD}=== $node ===${NC}"
+                        
+                        # Show status first
+                        if cd "$node_dir" 2>/dev/null; then
+                            local services=$(docker compose ps --format "table {{.Service}}\t{{.Status}}" 2>/dev/null | tail -n +2)
+                            if [[ -n "$services" ]]; then
+                                echo -e "${UI_MUTED}Services:${NC}"
+                                while IFS= read -r line; do
+                                    echo -e "${UI_MUTED}  $line${NC}"
+                                done <<< "$services"
+                            fi
+                            
+                            # Then show recent logs
+                            echo -e "\n${UI_MUTED}Recent logs:${NC}"
+                            safe_view_logs "docker compose logs -f --tail=20"
+                        fi
+                        echo
+                    fi
+                done
+                ;;
+            3)
+                return
+                ;;
+        esac
+        press_enter
+    fi
+}
+
+# View logs by service type (execution client, consensus client, etc.)
+view_logs_by_service() {
+    local service_options=(
+        "Execution clients (all nodes)"
+        "Consensus clients (all nodes)" 
+        "All services by type"
+        "Back"
+    )
+
+    local selection
+    if selection=$(fancy_select_menu "View by Service Type" "${service_options[@]}"); then
+        case $selection in
+            0)
+                clear
+                print_header
+                echo -e "${BOLD}Execution Client Logs (All Nodes)${NC}\n"
+                view_service_logs_across_nodes "execution"
+                ;;
+            1)
+                clear
+                print_header
+                echo -e "${BOLD}Consensus Client Logs (All Nodes)${NC}\n"
+                view_service_logs_across_nodes "consensus"
+                ;;
+            2)
+                clear
+                print_header
+                echo -e "${BOLD}All Services by Type${NC}\n"
+                view_all_service_types
+                ;;
+            3)
+                return
+                ;;
+        esac
+        press_enter
+    fi
+}
+
+# Helper function to view specific service logs across all nodes
+view_service_logs_across_nodes() {
+    local service_type="$1"
+    local nodes=($(get_node_list))
+    
+    for node in "${nodes[@]}"; do
+        local node_dir="$HOME/$node"
+        if [[ -d "$node_dir" ]]; then
+            echo -e "${CYAN}${BOLD}=== $node ($service_type) ===${NC}"
+            
+            if cd "$node_dir" 2>/dev/null; then
+                # Get service names based on type
+                local services=$(docker compose ps --services 2>/dev/null)
+                local target_services=""
+                
+                case $service_type in
+                    "execution")
+                        target_services=$(echo "$services" | grep -E "geth|erigon|nethermind|besu|reth")
+                        ;;
+                    "consensus")
+                        target_services=$(echo "$services" | grep -E "lighthouse|prysm|teku|nimbus|lodestar")
+                        ;;
+                esac
+                
+                if [[ -n "$target_services" ]]; then
+                    for service in $target_services; do
+                        echo -e "${UI_MUTED}--- $service ---${NC}"
+                        safe_view_logs "docker compose logs -f --tail=20 \"$service\" 2>/dev/null" || echo "No logs available"
+                    done
+                else
+                    echo -e "${UI_MUTED}No $service_type services found${NC}"
+                fi
+            fi
+            echo
+        fi
+    done
+}
+
+# View all service types organized
+view_all_service_types() {
+    local nodes=($(get_node_list))
+    
+    echo -e "${YELLOW}${BOLD}EXECUTION CLIENTS${NC}"
+    echo "=================="
+    view_service_logs_across_nodes "execution"
+    
+    echo -e "${YELLOW}${BOLD}CONSENSUS CLIENTS${NC}"
+    echo "=================="
+    view_service_logs_across_nodes "consensus"
+}
+
+# Follow logs for a specific node (live)
+follow_single_node_logs() {
+    local nodes=($(get_node_list))
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        print_box "No nodes found" "error"
+        press_enter
+        return
+    fi
+
+    local node_options=()
+    for node in "${nodes[@]}"; do
+        node_options+=("$node")
+    done
+    node_options+=("Back")
+
+    local selection
+    if selection=$(fancy_select_menu "Follow Logs - Select Node" "${node_options[@]}"); then
+        if [[ $selection -eq ${#node_options[@]}-1 ]]; then
+            return
+        fi
+        
+        local selected_node="${nodes[$selection]}"
+        local node_dir="$HOME/$selected_node"
+        
+        if [[ -d "$node_dir" ]]; then
+            clear
+            print_header
+            print_dashboard
+            echo -e "${BOLD}Live logs for $selected_node${NC} (Ctrl+C to exit and return to menu)\n"
+            cd "$node_dir" && safe_view_logs "docker compose logs -f --tail=20"
+        fi
+    fi
+}
+
+# Follow logs for all nodes (live)
+follow_all_nodes_logs() {
+    local nodes=($(get_node_list))
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        print_box "No nodes found" "error"
+        press_enter
+        return
+    fi
+
+    clear
+    print_header
+    print_dashboard
+    echo -e "${BOLD}Live logs from all nodes${NC} (Ctrl+C to exit and return to menu)\n"
+    echo -e "${UI_MUTED}Note: Logs from multiple nodes will be interleaved by timestamp${NC}\n"
+    
+    # Create a temporary script to follow all logs
+    local temp_script=$(mktemp)
+    cat > "$temp_script" << 'EOF'
+#!/bin/bash
+for node_dir in "$HOME"/ethnode*; do
+    if [[ -d "$node_dir" && -f "$node_dir/docker-compose.yml" ]]; then
+        (
+            cd "$node_dir"
+            docker compose logs -f --tail=20 2>/dev/null | sed "s/^/$(basename "$node_dir"): /"
+        ) &
+    fi
+done
+wait
+EOF
+    
+    chmod +x "$temp_script"
+    safe_view_logs "$temp_script"
+    rm -f "$temp_script"
+}
+
+# Simple log viewer with node selection
+view_split_screen_logs() {
+    local nodes=($(get_node_list))
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        print_box "No nodes found" "error"
+        press_enter
+        return
+    fi
+
+    # Create selection menu
+    local node_options=()
+    for node in "${nodes[@]}"; do
+        node_options+=("$node")
+    done
+    node_options+=("Back")
+
+    local selection
+    if selection=$(fancy_select_menu "Select Node to View Logs" "${node_options[@]}"); then
+        if [[ $selection -eq ${#node_options[@]}-1 ]]; then
+            return  # Back selected
+        fi
+        
+        local selected_node="${nodes[$selection]}"
+        local node_dir="$HOME/$selected_node"
+        
+        if [[ ! -d "$node_dir" ]]; then
+            print_box "$selected_node directory not found" "error"
+            press_enter
+            return
+        fi
+        
+        cd "$node_dir"
+        
+        clear
+        print_header
+        echo -e "${BOLD}Live Logs - $selected_node${NC}"
+        echo -e "${UI_MUTED}Press Ctrl+C to exit and return to menu${NC}\n"
+        echo -e "${CYAN}Starting live log stream for both execution and consensus clients...${NC}\n"
+        
+        # Use docker compose logs -f for the selected node
+        safe_view_logs "docker compose logs -f --tail=20 execution consensus 2>/dev/null"
+    fi
+}
+
+# Helper function to get list of available nodes
+get_node_list() {
+    local nodes=()
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            nodes+=($(basename "$dir"))
+        fi
+    done
+    echo "${nodes[@]}"
 }
