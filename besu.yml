@@ -1,0 +1,77 @@
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  execution:
+    container_name: ${NODE_NAME}-besu
+    restart: "unless-stopped"
+    image: hyperledger/besu:${BESU_VERSION}
+    pull_policy: always
+    user: "${NODE_UID}:${NODE_GID}"
+    stop_grace_period: 5m
+    environment:
+      - JAVA_OPTS=${BESU_HEAP:--Xmx5g}
+      - EL_EXTRAS=${EL_EXTRAS:-}
+      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - MINIMAL_NODE=${EL_MINIMAL_NODE:-}
+      - NETWORK=${NETWORK}
+      - IPV6=${IPV6:-false}
+    volumes:
+      - ./data/execution:/var/lib/besu
+      - /etc/localtime:/etc/localtime:ro
+      - ./jwt:/var/lib/besu/ee-secret
+    ports:
+      - ${HOST_IP:-}:${EL_RPC_PORT}:8545/tcp
+      - ${HOST_IP:-}:${EL_WS_PORT}:8546/tcp
+      - ${HOST_IP:-}:${EE_PORT}:8551/tcp
+      - ${HOST_IP:-}:6060:6060/tcp
+      - ${HOST_IP:-}:${EL_P2P_PORT}:${EL_P2P_PORT}/tcp
+      - ${HOST_IP:-}:${EL_P2P_PORT}:${EL_P2P_PORT}/udp
+    networks:
+      default:
+        aliases:
+          - eth1
+          - execution
+          - ${EXECUTION_ALIAS:-default-execution}
+    <<: *logging
+    entrypoint:
+      - /opt/besu/bin/besu
+      - --network=${NETWORK}
+      - --p2p-port=${EL_P2P_PORT}
+      - --rpc-http-enabled
+      - --rpc-http-host=0.0.0.0
+      - --rpc-http-port=8545
+      - --rpc-http-cors-origins=*
+      - --rpc-http-max-active-connections=65536
+      - --rpc-max-logs-range=65536
+      - --rpc-ws-enabled
+      - --rpc-ws-host=0.0.0.0
+      - --rpc-ws-port=8546
+      - --max-peers=${EL_MAX_PEER_COUNT}
+      - --host-allowlist=*
+      - --engine-host-allowlist=*
+      - --engine-jwt-secret=/var/lib/besu/ee-secret/jwtsecret
+      - --engine-rpc-port=8551
+      - --logging=INFO
+      - --metrics-enabled
+      - --metrics-host=0.0.0.0
+      - --metrics-port=6060
+      - --nat-method=DOCKER
+      - --data-path=/var/lib/besu
+    labels:
+      - prometheus.scrape=true
+      - prometheus.job=besu
+      - prometheus.port=6060
+      - prometheus.path=/metrics
+      - ethereum.client=besu
+      - ethereum.layer=execution
+      - ethereum.network=${NETWORK}
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}
