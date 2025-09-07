@@ -104,6 +104,7 @@ generate_prometheus_targets() {
 
 # Install monitoring stack
 install_monitoring_stack() {
+    local preselected_networks=("$@")  # Accept networks as parameters
     echo -e "\n${CYAN}${BOLD}Install Monitoring Stack${NC}"
     echo "========================="
     echo
@@ -115,15 +116,24 @@ install_monitoring_stack() {
     
     # Check if already installed
     if [[ -d "$HOME/monitoring" ]]; then
-        echo -e "${YELLOW}Monitoring stack already installed${NC}"
-        
-        if fancy_confirm "Remove existing installation?" "n"; then
+        if [[ ${#preselected_networks[@]} -gt 0 ]]; then
+            # Plugin installation - remove silently
+            echo -e "${UI_MUTED}Removing existing installation...${NC}"
             cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
             sudo rm -rf "$HOME/monitoring"
-            echo -e "${UI_MUTED}Existing monitoring removed${NC}"
         else
-            press_enter
-            return
+            # Manual installation - ask for confirmation
+            echo -e "${YELLOW}Monitoring stack already installed${NC}"
+            
+            if fancy_confirm "Remove existing installation?" "n"; then
+                cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
+                sudo rm -rf "$HOME/monitoring"
+                echo -e "${UI_MUTED}Existing monitoring removed${NC}"
+            else
+                echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+                read -r
+                return
+            fi
         fi
     fi
     
@@ -154,39 +164,54 @@ install_monitoring_stack() {
     fi
     
     # Step 3: Network access configuration
-    echo
-    local access_options=(
-        "My machine only (127.0.0.1) - Most secure"
-        "Local network access (auto-detect IP)"
-        "All networks (0.0.0.0) - Use with caution"
-    )
-    
-    local bind_ip="127.0.0.1"
-    local access_choice
-    if access_choice=$(fancy_select_menu "Monitoring Access Level" "${access_options[@]}"); then
-        case $access_choice in
-            0) bind_ip="127.0.0.1" ;;
-            1) 
-                bind_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
-                echo -e "${UI_MUTED}Using local network IP: $bind_ip${NC}"
-                ;;
-            2) 
-                bind_ip="0.0.0.0"
-                echo -e "${YELLOW}⚠ WARNING: Accessible from all networks${NC}"
-                ;;
-        esac
+    local bind_ip
+    if [[ ${#preselected_networks[@]} -gt 0 ]]; then
+        # Plugin installation - use 0.0.0.0 automatically
+        bind_ip="0.0.0.0"
+        echo -e "${UI_MUTED}Setting network access to all networks (0.0.0.0)...${NC}"
+    else
+        # Manual installation - prompt for choice
+        echo
+        local access_options=(
+            "My machine only (127.0.0.1) - Most secure"
+            "Local network access (auto-detect IP)"
+            "All networks (0.0.0.0) - Use with caution"
+        )
+        
+        bind_ip="127.0.0.1"
+        local access_choice
+        if access_choice=$(fancy_select_menu "Monitoring Access Level" "${access_options[@]}"); then
+            case $access_choice in
+                0) bind_ip="127.0.0.1" ;;
+                1) 
+                    bind_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
+                    echo -e "${UI_MUTED}Using local network IP: $bind_ip${NC}"
+                    ;;
+                2) 
+                    bind_ip="0.0.0.0"
+                    echo -e "${YELLOW}⚠ WARNING: Accessible from all networks${NC}"
+                    ;;
+            esac
+        fi
     fi
     
     # Step 4: Auto-discover and connect to all ethnode networks
     echo
-    echo -e "${UI_MUTED}Auto-discovering ethnode networks...${NC}"
-    local available_networks=($(discover_nodeboi_networks))
-    
-    # Auto-select all ethnode networks
     local selected_networks=()
-    for network_info in "${available_networks[@]}"; do
-        local network_name="${network_info%%:*}"
-        local containers="${network_info#*:}"
+    
+    if [[ ${#preselected_networks[@]} -gt 0 ]]; then
+        # Use pre-selected networks (from plugin installation)
+        echo -e "${UI_MUTED}Using pre-selected networks: ${preselected_networks[*]}${NC}"
+        selected_networks=("${preselected_networks[@]}")
+    else
+        # Auto-discover and prompt for selection
+        echo -e "${UI_MUTED}Auto-discovering ethnode networks...${NC}"
+        local available_networks=($(discover_nodeboi_networks))
+        
+        # Auto-select all ethnode networks
+        for network_info in "${available_networks[@]}"; do
+            local network_name="${network_info%%:*}"
+            local containers="${network_info#*:}"
         
         # Only include ethnode networks, not other plugin networks
         if [[ "$network_name" =~ ^ethnode.*-net$ ]]; then
@@ -197,12 +222,13 @@ install_monitoring_stack() {
                 echo -e "${UI_MUTED}  Found: $network_name [${containers}]${NC}"
             fi
         fi
-    done
-    
-    if [[ ${#selected_networks[@]} -eq 0 ]]; then
-        echo -e "${UI_MUTED}  No ethnode networks found. Monitoring will only collect system metrics.${NC}"
-    else
-        echo -e "${UI_MUTED}  Auto-connecting to: ${selected_networks[*]}${NC}"
+        done
+        
+        if [[ ${#selected_networks[@]} -eq 0 ]]; then
+            echo -e "${UI_MUTED}  No ethnode networks found. Monitoring will only collect system metrics.${NC}"
+        else
+            echo -e "${UI_MUTED}  Auto-connecting to: ${selected_networks[*]}${NC}"
+        fi
     fi
     
     # Step 5: Find available ports
@@ -234,9 +260,9 @@ NODE_EXPORTER_PORT=${node_exporter_port}
 GRAFANA_PASSWORD=${grafana_password}
 
 # Monitoring Versions
-PROMETHEUS_VERSION=v3.0.0
-GRAFANA_VERSION=11.2.0
-NODE_EXPORTER_VERSION=v1.8.2
+PROMETHEUS_VERSION=v3.5.0
+GRAFANA_VERSION=12.1.0
+NODE_EXPORTER_VERSION=v1.9.1
 
 # Network Access
 BIND_IP=${bind_ip}
@@ -279,11 +305,11 @@ EOF
 
     # Add selected networks to prometheus service
     for network in "${selected_networks[@]}"; do
-        echo "      - ${network}" >> ~/monitoring/compose.yml
+        echo "      - ${network}" | sudo tee -a ~/monitoring/compose.yml > /dev/null
     done
 
     # Continue with rest of compose.yml
-    cat >> ~/monitoring/compose.yml <<'EOF'
+    sudo tee -a ~/monitoring/compose.yml > /dev/null <<'EOF'
     depends_on:
       - node-exporter
     security_opt:
@@ -347,7 +373,7 @@ EOF
     
     # Add external networks to compose.yml
     for network in "${selected_networks[@]}"; do
-        cat >> ~/monitoring/compose.yml <<EOF
+        sudo tee -a ~/monitoring/compose.yml > /dev/null <<EOF
   ${network}:
     external: true
     name: ${network}
@@ -405,10 +431,8 @@ EOF
             
             if [[ "$bind_ip" == "127.0.0.1" ]]; then
                 echo -e "Grafana:     ${GREEN}http://localhost:${grafana_port}${NC}"
-                echo -e "Prometheus:  ${GREEN}http://localhost:${prometheus_port}${NC}"
             else
                 echo -e "Grafana:     ${GREEN}http://${bind_ip}:${grafana_port}${NC}"
-                echo -e "Prometheus:  ${GREEN}http://${bind_ip}:${prometheus_port}${NC}"
             fi
             
             echo
@@ -452,14 +476,11 @@ view_grafana_credentials() {
     echo -e "${BOLD}URLs:${NC}"
     if [[ "$bind_ip" == "127.0.0.1" ]]; then
         echo -e "  Grafana:    ${GREEN}http://localhost:${grafana_port}${NC}"
-        echo -e "  Prometheus: ${GREEN}http://localhost:${prometheus_port}${NC}"
     elif [[ "$bind_ip" == "0.0.0.0" ]]; then
         local actual_ip=$(hostname -I | awk '{print $1}')
         echo -e "  Grafana:    ${GREEN}http://${actual_ip}:${grafana_port}${NC}"
-        echo -e "  Prometheus: ${GREEN}http://${actual_ip}:${prometheus_port}${NC}"
     else
         echo -e "  Grafana:    ${GREEN}http://${bind_ip}:${grafana_port}${NC}"
-        echo -e "  Prometheus: ${GREEN}http://${bind_ip}:${prometheus_port}${NC}"
     fi
     
     echo
@@ -468,7 +489,8 @@ view_grafana_credentials() {
     echo -e "  Password: ${GREEN}${grafana_password}${NC}"
     
     echo
-    press_enter
+    echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+    read -r
 }
 
 # Change monitoring network access level
@@ -672,313 +694,435 @@ remove_monitoring_stack() {
     echo -e "\n${CYAN}${BOLD}Remove Monitoring Stack${NC}"
     echo "======================="
     
-    if fancy_confirm "Remove monitoring stack? This will delete all metrics data!" "n"; then
-        echo -e "\n${UI_MUTED}Stopping containers...${NC}"
-        cd "$HOME/monitoring"
-        docker compose down -v
-        
-        echo -e "${UI_MUTED}Removing directory...${NC}"
-        cd "$HOME"
-        sudo rm -rf "$HOME/monitoring"
-        
-        # Remove monitoring user (optional)
-        if fancy_confirm "Also remove monitoring system user?" "n"; then
-            sudo userdel monitoring 2>/dev/null || true
-        fi
-        
-        echo -e "${GREEN}✓ Monitoring stack removed${NC}"
-    else
-        echo "Removal cancelled"
-    fi
+    echo -e "${UI_MUTED}Stopping monitoring containers...${NC}"
+    cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
+    
+    echo -e "${UI_MUTED}Removing monitoring files...${NC}"
+    sudo rm -rf "$HOME/monitoring"
+    
+    echo -e "${UI_MUTED}Removing monitoring system user...${NC}"
+    sudo userdel monitoring 2>/dev/null || true
+    
+    echo -e "${GREEN}✅ Monitoring plugin removed successfully${NC}"
     
     press_enter
 }
 
-# Update monitoring stack with version selection
-update_monitoring_stack() {
-    if [[ ! -d "$HOME/monitoring" ]]; then
+
+
+# Network Management Interface - Clean and Simple
+manage_monitoring_networks() {
+    if [[ ! -f "$HOME/monitoring/.env" ]]; then
         echo -e "${YELLOW}Monitoring stack not installed${NC}"
         press_enter
         return
     fi
     
-    clear
-    print_header
+    # Define colors for this function (don't redeclare UI_MUTED if it exists)
+    local RED='\033[0;31m'
+    local GREEN='\033[0;32m'
+    local YELLOW='\033[1;33m'
+    local CYAN='\033[0;36m'
+    local BOLD='\033[1m'
+    local NC='\033[0m'
+    local PINK='\033[38;5;213m'
+    [[ -z "$UI_MUTED" ]] && UI_MUTED='\033[38;5;240m'
     
-    echo -e "\n${CYAN}${BOLD}Update Monitoring Stack${NC}"
-    echo "======================="
-    echo
+    # Load required libraries for dashboard functionality
+    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
+    [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
     
-    # Get current versions
-    local current_prometheus=$(grep "^PROMETHEUS_VERSION=" "$HOME/monitoring/.env" | cut -d'=' -f2)
-    local current_grafana=$(grep "^GRAFANA_VERSION=" "$HOME/monitoring/.env" | cut -d'=' -f2)  
-    local current_node_exporter=$(grep "^NODE_EXPORTER_VERSION=" "$HOME/monitoring/.env" | cut -d'=' -f2)
+    # Clear initialization flags for fresh start
+    unset TEMP_SELECTED_NETWORKS
+    unset TEMP_STATE_INITIALIZED
     
-    echo -e "${UI_MUTED}Current versions:${NC}"
-    echo -e "${UI_MUTED}  Prometheus: $current_prometheus${NC}"
-    echo -e "${UI_MUTED}  Grafana: $current_grafana${NC}"
-    echo -e "${UI_MUTED}  Node Exporter: $current_node_exporter${NC}"
-    echo
-    
-    # Service selection menu
-    local update_options=(
-        "Update all services (recommended)"
-        "Update Prometheus only"
-        "Update Grafana only" 
-        "Update Node Exporter only"
-        "Cancel"
-    )
-    
-    local selection
-    if ! selection=$(fancy_select_menu "Select Update Scope" "${update_options[@]}"); then
-        return
-    fi
-    
-    local services_to_update=()
-    case $selection in
-        0) services_to_update=("prometheus" "grafana" "node-exporter") ;;
-        1) services_to_update=("prometheus") ;;
-        2) services_to_update=("grafana") ;;
-        3) services_to_update=("node-exporter") ;;
-        4) return ;;
-    esac
-    
-    echo
-    echo -e "${UI_MUTED}Updating services: ${services_to_update[*]}${NC}"
-    
-    # Version selection for each service
-    local new_prometheus_version="$current_prometheus"
-    local new_grafana_version="$current_grafana"
-    local new_node_exporter_version="$current_node_exporter"
-    
-    for service in "${services_to_update[@]}"; do
-        case $service in
-            "prometheus")
-                echo
-                new_prometheus_version=$(prompt_monitoring_version "Prometheus" "$current_prometheus")
-                [[ -z "$new_prometheus_version" ]] && new_prometheus_version="$current_prometheus"
+    while true; do
+        clear
+        
+        # Print header
+        echo -e "${PINK}${BOLD}"
+        echo "      ███╗   ██╗ ██████╗ ██████╗ ███████╗██████╗  ██████╗ ██╗"
+        echo "      ████╗  ██║██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║"
+        echo "      ██╔██╗ ██║██║   ██║██║  ██║█████╗  ██████╔╝██║   ██║██║"
+        echo "      ██║╚██╗██║██║   ██║██║  ██║██╔══╝  ██╔══██╗██║   ██║██║"
+        echo "      ██║ ╚████║╚██████╔╝██████╔╝███████╗██████╔╝╚██████╔╝██║"
+        echo "      ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝"
+        echo -e "${NC}"
+        echo -e "                      ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
+        echo -e "                             ${YELLOW}v0.3.1${NC}"
+        echo
+        
+        # Show dashboard if available
+        if declare -f print_dashboard >/dev/null; then
+            print_dashboard
+            echo
+        else
+            echo -e "${BOLD}NODEBOI Dashboard${NC}"
+            echo -e "${BOLD}=================${NC}"
+            echo
+        fi
+        
+        echo -e "${CYAN}${BOLD}🔗 Docker Network Connections${NC}"
+        echo -e "${CYAN}${BOLD}==============================${NC}"
+        echo
+        echo -e "${UI_MUTED}Networks available for monitoring connection:${NC}"
+        echo
+        
+        # Find all available ethnode networks
+        local available_networks=()
+        for dir in "$HOME"/ethnode*; do
+            if [[ -d "$dir" && -f "$dir/.env" ]]; then
+                local node_name=$(basename "$dir")
+                local network_name="${node_name}-net"
+                
+                # Check if network exists and has running containers
+                if docker network ls --format "{{.Name}}" | grep -q "^${network_name}$"; then
+                    local containers=$(docker ps --filter "network=${network_name}" --format "{{.Names}}" | wc -l)
+                    if [[ $containers -gt 0 ]]; then
+                        available_networks+=("${network_name}:${containers}")
+                    fi
+                fi
+            fi
+        done
+        
+        if [[ ${#available_networks[@]} -eq 0 ]]; then
+            echo -e "${YELLOW}No running ethnode networks found${NC}"
+            echo -e "${UI_MUTED}Start some ethnode instances first${NC}"
+            echo
+            press_enter
+            return
+        fi
+        
+        # Get currently connected networks from compose.yml
+        local current_networks=""
+        if [[ -f "$HOME/monitoring/compose.yml" ]]; then
+            # Extract external network names from compose.yml
+            current_networks=$(grep -A1 "external: true" "$HOME/monitoring/compose.yml" | grep "name:" | awk '{print $2}' | tr '\n' ' ')
+        fi
+        
+        # Initialize temporary selection state with current compose.yml state (only on first loop)
+        if [[ -z "$TEMP_SELECTED_NETWORKS" && -z "$TEMP_STATE_INITIALIZED" ]]; then
+            TEMP_SELECTED_NETWORKS="$current_networks"
+            TEMP_STATE_INITIALIZED="true"
+        fi
+        
+        # Display available networks with current selection status
+        for i in "${!available_networks[@]}"; do
+            local network_info="${available_networks[$i]}"
+            local network_name="${network_info%%:*}"
+            local node_name="${network_name%-net}"
+            local service_count="${network_info#*:}"
+            
+            # Check if currently selected in temporary state
+            local checkbox="[ ]"
+            if [[ -n "$TEMP_SELECTED_NETWORKS" ]] && echo " $TEMP_SELECTED_NETWORKS " | grep -q " $network_name "; then
+                checkbox="[x]"
+            fi
+            
+            echo -e "  $((i+1))) $checkbox $node_name ($service_count services)"
+        done
+        
+        echo
+        echo -e "${BOLD}Actions:${NC}"
+        echo -e "  Enter numbers to toggle networks (e.g., '1' to toggle ethnode1, '1 2' for both)"
+        echo -e "  A) Select all networks"
+        echo -e "  D) Deselect all networks"
+        echo -e "  S) Save current selection"
+        echo -e "  Q) Back to monitoring menu"
+        echo
+        
+        read -p "Your choice: " choice
+        
+        case "$choice" in
+            [1-9]*)
+                # Toggle networks: each number toggles that network on/off
+                local current_selection=()
+                if [[ -n "$TEMP_SELECTED_NETWORKS" ]]; then
+                    read -ra current_selection <<< "$TEMP_SELECTED_NETWORKS"
+                fi
+                
+                # Process each number in the input
+                for num in $choice; do
+                    if [[ $num =~ ^[0-9]+$ ]] && [[ $num -ge 1 ]] && [[ $num -le ${#available_networks[@]} ]]; then
+                        local network_name="${available_networks[$((num-1))]%%:*}"
+                        
+                        # Check if network is already selected
+                        local found=false
+                        local new_selection=()
+                        
+                        for selected in "${current_selection[@]}"; do
+                            if [[ "$selected" == "$network_name" ]]; then
+                                found=true
+                                # Skip this network (remove it)
+                            else
+                                new_selection+=("$selected")
+                            fi
+                        done
+                        
+                        # If not found, add it
+                        if [[ "$found" == false ]]; then
+                            new_selection+=("$network_name")
+                        fi
+                        
+                        current_selection=("${new_selection[@]}")
+                    fi
+                done
+                
+                # Update temporary selection
+                TEMP_SELECTED_NETWORKS="${current_selection[*]}"
+                
+                if [[ ${#current_selection[@]} -eq 0 ]]; then
+                    echo -e "${UI_MUTED}No networks selected${NC}"
+                else
+                    local node_names=()
+                    for network in "${current_selection[@]}"; do
+                        node_names+=("${network%-net}")
+                    done
+                    echo -e "${GREEN}Selected: ${node_names[*]}${NC}"
+                fi
+                sleep 1
                 ;;
-            "grafana")
-                echo
-                new_grafana_version=$(prompt_monitoring_version "Grafana" "$current_grafana")
-                [[ -z "$new_grafana_version" ]] && new_grafana_version="$current_grafana"
+                
+            [Aa])
+                # Select all networks
+                local all_networks=()
+                for network_info in "${available_networks[@]}"; do
+                    all_networks+=("${network_info%%:*}")
+                done
+                TEMP_SELECTED_NETWORKS="${all_networks[*]}"
+                echo -e "${GREEN}All networks selected${NC}"
+                sleep 1
                 ;;
-            "node-exporter")
-                echo
-                new_node_exporter_version=$(prompt_monitoring_version "Node Exporter" "$current_node_exporter")
-                [[ -z "$new_node_exporter_version" ]] && new_node_exporter_version="$current_node_exporter"
+                
+            [Dd])
+                # Deselect all networks
+                TEMP_SELECTED_NETWORKS=""
+                echo -e "${UI_MUTED}All networks deselected${NC}"
+                sleep 1
+                ;;
+                
+            [Ss])
+                # Save and apply network connections
+                apply_network_connections
+                return
+                ;;
+                
+            [Qq]|'')
+                return
+                ;;
+                
+            *)
+                echo -e "${YELLOW}Invalid option${NC}"
+                sleep 1
                 ;;
         esac
     done
-    
-    # Show update summary
-    echo
-    echo -e "${BOLD}Update Summary:${NC}"
-    echo -e "${UI_MUTED}━━━━━━━━━━━━━━━━${NC}"
-    
-    if [[ "$new_prometheus_version" != "$current_prometheus" ]]; then
-        echo -e "Prometheus: $current_prometheus → ${GREEN}$new_prometheus_version${NC}"
-    fi
-    if [[ "$new_grafana_version" != "$current_grafana" ]]; then
-        echo -e "Grafana: $current_grafana → ${GREEN}$new_grafana_version${NC}"
-    fi
-    if [[ "$new_node_exporter_version" != "$current_node_exporter" ]]; then
-        echo -e "Node Exporter: $current_node_exporter → ${GREEN}$new_node_exporter_version${NC}"
-    fi
-    
-    # Check if any versions changed
-    if [[ "$new_prometheus_version" == "$current_prometheus" && \
-          "$new_grafana_version" == "$current_grafana" && \
-          "$new_node_exporter_version" == "$current_node_exporter" ]]; then
-        echo -e "${UI_MUTED}No version changes - will restart services with current versions${NC}"
-    fi
-    
-    echo
-    if ! fancy_confirm "Proceed with update?" "y"; then
-        echo -e "${UI_MUTED}Update cancelled${NC}"
-        press_enter
-        return
-    fi
-    
-    # Update .env file with new versions
-    cd "$HOME/monitoring"
-    sudo sed -i "s/^PROMETHEUS_VERSION=.*/PROMETHEUS_VERSION=${new_prometheus_version}/" .env
-    sudo sed -i "s/^GRAFANA_VERSION=.*/GRAFANA_VERSION=${new_grafana_version}/" .env
-    sudo sed -i "s/^NODE_EXPORTER_VERSION=.*/NODE_EXPORTER_VERSION=${new_node_exporter_version}/" .env
-    
-    # Perform the update
-    echo -e "\n${UI_MUTED}Updating monitoring stack...${NC}"
-    echo -e "${UI_MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    # Pull new images
-    echo -e "${UI_MUTED}Pulling Docker images...${NC}"
-    if docker compose pull; then
-        echo -e "${GREEN}✓ Images pulled successfully${NC}"
-    else
-        echo -e "${RED}✗ Failed to pull images${NC}"
-        press_enter
-        return
-    fi
-    
-    # Restart services
-    echo -e "${UI_MUTED}Restarting services...${NC}"
-    if docker compose down && docker compose up -d --force-recreate; then
-        echo -e "${GREEN}✓ Services restarted successfully${NC}"
-        
-        # Show final status
-        echo
-        sleep 2
-        local running_services=$(docker compose ps --services --filter status=running 2>/dev/null)
-        
-        if echo "$running_services" | grep -q "prometheus" && \
-           echo "$running_services" | grep -q "grafana" && \
-           echo "$running_services" | grep -q "node-exporter"; then
-            echo -e "${GREEN}✓ All monitoring services are running${NC}"
-            
-            local bind_ip=$(grep "^BIND_IP=" .env | cut -d'=' -f2)
-            local grafana_port=$(grep "^GRAFANA_PORT=" .env | cut -d'=' -f2)
-            
-            echo
-            echo -e "${BOLD}Access Information:${NC}"
-            if [[ "$bind_ip" == "127.0.0.1" ]]; then
-                echo -e "Grafana: ${GREEN}http://localhost:${grafana_port}${NC}"
-            elif [[ "$bind_ip" == "0.0.0.0" ]]; then
-                local actual_ip=$(hostname -I | awk '{print $1}')
-                echo -e "Grafana: ${GREEN}http://${actual_ip}:${grafana_port}${NC}"
-            else
-                echo -e "Grafana: ${GREEN}http://${bind_ip}:${grafana_port}${NC}"
-            fi
-        else
-            echo -e "${YELLOW}⚠ Some services may not be running properly${NC}"
-            echo -e "${UI_MUTED}Check logs with: docker compose logs${NC}"
-        fi
-    else
-        echo -e "${RED}✗ Failed to restart services${NC}"
-    fi
-    
-    echo
-    press_enter
 }
 
-# Prompt for monitoring service version selection
-prompt_monitoring_version() {
-    local service_name=$1
-    local current_version=$2
+# Apply network connections - actually connect containers to selected networks
+apply_network_connections() {
+    clear
+    echo -e "${CYAN}${BOLD}💾 Applying Network Connections${NC}"
+    echo "================================"
+    echo
     
-    local version_options=(
-        "Keep current version ($current_version)"
-        "Enter version number"
-        "Use latest version"
-    )
+    # Get the selected networks from temporary variable (no .env file involved)
+    local selected_networks=($TEMP_SELECTED_NETWORKS)
     
-    local version_choice
-    if ! version_choice=$(fancy_select_menu "$service_name Version" "${version_options[@]}"); then
-        echo "$current_version"
-        return
+    if [[ ${#selected_networks[@]} -eq 0 ]]; then
+        echo -e "${UI_MUTED}No networks selected - monitoring will be isolated${NC}"
+    else
+        echo -e "${UI_MUTED}Connecting to networks:${NC}"
+        for network in "${selected_networks[@]}"; do
+            local node_name="${network%-net}"
+            echo -e "  • $node_name"
+        done
     fi
     
-    case $version_choice in
-        0)
-            # Keep current
-            echo "$current_version"
-            ;;
-        1)
-            # Manual entry
-            local manual_version
-            manual_version=$(fancy_text_input "$service_name Version" \
-                "Enter version (e.g., v3.5.0, 11.2.0):" \
-                "" \
-                "")
+    echo
+    echo -e "${UI_MUTED}Step 1: Rebuilding compose.yml with selected networks...${NC}"
+    
+    cd "$HOME/monitoring"
+    
+    # Use the same template system as installation to rebuild compose.yml with proper service network connections
+    sudo tee ~/monitoring/compose.yml > /dev/null <<'EOF'
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    container_name: ${MONITORING_NAME}-prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--web.external-url=http://localhost:${PROMETHEUS_PORT}'
+    ports:
+      - "${BIND_IP}:${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+EOF
+
+    # Add selected networks to prometheus service
+    for network in "${selected_networks[@]}"; do
+        echo "      - ${network}" | sudo tee -a ~/monitoring/compose.yml > /dev/null
+    done
+
+    # Continue with rest of compose.yml
+    sudo tee -a ~/monitoring/compose.yml > /dev/null <<'EOF'
+    depends_on:
+      - node-exporter
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: ${MONITORING_NAME}-grafana
+    restart: unless-stopped
+    user: "${NODE_UID}:${NODE_GID}"
+    ports:
+      - "${BIND_IP}:${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:${GRAFANA_PORT}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  node-exporter:
+    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+    container_name: ${MONITORING_NAME}-node-exporter
+    restart: unless-stopped
+    user: "root"
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
+    ports:
+      - "127.0.0.1:${NODE_EXPORTER_PORT}:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_TIME
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+volumes:
+  prometheus_data:
+    name: ${MONITORING_NAME}_prometheus_data
+  grafana_data:
+    name: ${MONITORING_NAME}_grafana_data
+
+networks:
+  monitoring:
+    name: monitoring-net
+    driver: bridge
+EOF
+    
+    # Add selected external networks to compose.yml
+    for network in "${selected_networks[@]}"; do
+        sudo tee -a ~/monitoring/compose.yml > /dev/null <<EOF
+  ${network}:
+    external: true
+    name: ${network}
+EOF
+    done
+    
+    echo -e "${UI_MUTED}Step 2: Connecting containers to networks...${NC}"
+    
+    # Connect running monitoring containers to selected networks
+    local containers=("monitoring-prometheus" "monitoring-grafana" "monitoring-node-exporter")
+    
+    for container in "${containers[@]}"; do
+        if docker ps --format "{{.Names}}" | grep -q "^${container}$"; then
+            echo -e "${UI_MUTED}  → Connecting $container...${NC}"
             
-            if [[ -z "$manual_version" ]]; then
-                echo -e "${UI_MUTED}Using current version: $current_version${NC}" >&2
-                echo "$current_version"
-            else
-                echo -e "${UI_MUTED}Using manual version: $manual_version${NC}" >&2
-                echo "$manual_version"
-            fi
-            ;;
-        2)
-            # Latest version - fetch from GitHub API using unified function
-            echo -e "${UI_MUTED}Fetching latest version...${NC}" >&2
-            local service_key
-            case "$service_name" in
-                "Prometheus") service_key="prometheus" ;;
-                "Grafana") service_key="grafana" ;;
-                "Node Exporter") service_key="node-exporter" ;;
-                *) service_key="" ;;
-            esac
+            # Disconnect from old external networks (keep monitoring network)
+            for old_network in $(docker network ls --format "{{.Name}}" | grep "ethnode.*-net"); do
+                docker network disconnect "$old_network" "$container" 2>/dev/null || true
+            done
             
-            if [[ -n "$service_key" ]]; then
-                local latest_version=$(get_latest_version "$service_key" 2>/dev/null)
-                if [[ -n "$latest_version" ]]; then
-                    echo -e "${UI_MUTED}Using latest version: $latest_version${NC}" >&2
-                    echo "$latest_version"
-                else
-                    echo -e "${UI_MUTED}Could not fetch latest version, using current: $current_version${NC}" >&2
-                    echo "$current_version"
+            # Connect to selected networks
+            for network in "${selected_networks[@]}"; do
+                if docker network ls --format "{{.Name}}" | grep -q "^${network}$"; then
+                    docker network connect "$network" "$container" 2>/dev/null || true
                 fi
-            else
-                echo "$current_version"
-            fi
-            ;;
-    esac
+            done
+        fi
+    done
+    
+    echo
+    if [[ ${#selected_networks[@]} -eq 0 ]]; then
+        echo -e "${GREEN}✅ Monitoring network is now isolated${NC}"
+    else
+        local node_names=()
+        for network in "${selected_networks[@]}"; do
+            node_names+=("${network%-net}")
+        done
+        echo -e "${GREEN}✅ Monitoring connected to: ${node_names[*]}${NC}"
+    fi
+    
+    echo -e "${UI_MUTED}Changes applied successfully. Network connections are now active.${NC}"
+    echo
+    echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+    read -r
 }
 
 # Monitoring management menu
 manage_monitoring_menu() {
     while true; do
-        # Check if monitoring is installed
-        if [[ -d "$HOME/monitoring" ]]; then
-            
-            local menu_options=(
-                "Start/stop monitoring"
-                "Update monitoring"
-                "Remove monitoring stack"
-                "View logs"
-                "See Grafana credentials"
-                "Back to main menu"
-            )
-        else
-            local menu_options=(
-                "Install monitoring stack"
-                "Back to main menu"
-            )
-        fi
+        local menu_options=(
+            "Start/stop monitoring"
+            "See Grafana login information"
+            "View logs"
+            "Update monitoring"
+            "Back to main menu"
+        )
         
         local selection
-        if selection=$(fancy_select_menu "Monitoring Options" "${menu_options[@]}"); then
-            if [[ -d "$HOME/monitoring" ]]; then
-                case $selection in
-                    0) 
-                        # Start/stop monitoring - check current status and toggle
-                        cd "$HOME/monitoring"
-                        if docker compose ps --services --filter status=running 2>/dev/null | grep -q prometheus; then
-                            echo -e "${UI_MUTED}Stopping monitoring stack...${NC}"
-                            docker compose down
-                            echo -e "${GREEN}✓ Monitoring stopped${NC}"
-                        else
-                            echo -e "${UI_MUTED}Starting monitoring stack...${NC}"
-                            docker compose up -d
-                            echo -e "${GREEN}✓ Monitoring started${NC}"
-                        fi
-                        press_enter
-                        ;;
-                    1) update_monitoring_stack ;;
-                    2) remove_monitoring_stack ;;
-                    3)
-                        cd "$HOME/monitoring"
-                        docker compose logs --tail=50 -f
-                        ;;
-                    4) view_grafana_credentials ;;
-                    5) return ;;
-                esac
-            else
-                case $selection in
-                    0) install_monitoring_stack ;;
-                    1) return ;;
-                esac
-            fi
+        if selection=$(fancy_select_menu "Manage Monitoring" "${menu_options[@]}"); then
+            case $selection in
+                0) manage_monitoring_state ;;
+                1) view_monitoring_logs ;;
+                2) view_grafana_credentials ;;
+                3) update_monitoring_services ;;
+                4) return ;;
+            esac
         else
             return
         fi
@@ -1057,14 +1201,14 @@ check_monitoring_health() {
             node_exporter_status="${RED}✗${NC}"
         fi
         
-        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" "$grafana_status" "Grafana" "$grafana_version" "$grafana_update_indicator" "$display_ip" "$grafana_port"
-        printf "     %b %-20s (%s)%b\n" "$prometheus_status" "Prometheus" "$prometheus_version" "$prometheus_update_indicator"
-        printf "     %b %-20s (%s)%b\n" "$node_exporter_status" "Node Exporter" "$node_exporter_version" "$node_exporter_update_indicator"
+        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" "$grafana_status" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+        printf "     %b %-20s (%s)%b\n" "$prometheus_status" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator"
+        printf "     %b %-20s (%s)%b\n" "$node_exporter_status" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     else
         echo -e "  ${RED}●${NC} monitoring - ${RED}Stopped${NC}"
-        printf "     %-20s (%s)%b\t     http://%s:%s\n" "Grafana" "$grafana_version" "$grafana_update_indicator" "$display_ip" "$grafana_port"
-        printf "     %-20s (%s)%b\n" "Prometheus" "$prometheus_version" "$prometheus_update_indicator"
-        printf "     %-20s (%s)%b\n" "Node Exporter" "$node_exporter_version" "$node_exporter_update_indicator"
+        printf "     %-20s (%s)%b\t     http://%s:%s\n" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+        printf "     %-20s (%s)%b\n" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator"
+        printf "     %-20s (%s)%b\n" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     fi
     echo
     echo
@@ -1093,40 +1237,423 @@ manage_plugins_menu() {
         clear
         print_header
         
-        echo -e "${BOLD}Plugin Services${NC}"
-        echo "==============="
-        echo
-        echo -e "${UI_MUTED}Install additional services to extend NODEBOI functionality${NC}"
-        echo
         
-        local menu_options=(
-            "Install monitoring stack (Prometheus + Grafana)"
-            "Install SSV Operator (coming soon)"
-            "Install Vero Monitor (coming soon)"  
-            "Install Web3Signer (coming soon)"
-            "Back to main menu"
-        )
+        # Check if monitoring stack is installed
+        local monitoring_installed=false
+        if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" ]]; then
+            monitoring_installed=true
+        fi
+        
+        local menu_options=()
+        if [[ "$monitoring_installed" == true ]]; then
+            menu_options+=("Uninstall monitoring plugin")
+        else
+            menu_options+=("Install monitoring plugin (with DICKS)")
+        fi
+        
+        menu_options+=("Back to main menu")
         
         local selection
         if selection=$(fancy_select_menu "Available Plugins" "${menu_options[@]}"); then
-            case $selection in
-                0) install_monitoring_stack ;;
-                1) 
-                    echo -e "${YELLOW}SSV Operator plugin coming soon${NC}"
-                    press_enter
-                    ;;
-                2)
-                    echo -e "${YELLOW}Vero Monitor plugin coming soon${NC}"
-                    press_enter
-                    ;;
-                3)
-                    echo -e "${YELLOW}Web3Signer plugin coming soon${NC}"
-                    press_enter
-                    ;;
-                4) return ;;
-            esac
+            if [[ "$monitoring_installed" == true ]]; then
+                case $selection in
+                    0) remove_monitoring_stack ;;
+                    1) return ;;
+                esac
+            else
+                case $selection in
+                    0) install_monitoring_plugin_with_dicks ;;
+                    1) return ;;
+                esac
+            fi
         else
             return
         fi
     done
+}
+# Install monitoring plugin with automatic DICKS network setup
+install_monitoring_plugin_with_dicks() {
+    clear
+    print_header
+    
+    # Show dashboard if available
+    if declare -f print_dashboard >/dev/null; then
+        print_dashboard
+        echo
+    fi
+    
+    echo -e "${CYAN}${BOLD}🔌 Installing Monitoring Plugin with DICKS${NC}"
+    echo -e "${CYAN}${BOLD}===========================================${NC}"
+    echo
+    echo -e "${UI_MUTED}This will install the monitoring stack (Prometheus + Grafana) and"
+    echo -e "automatically connect it to all available ethnode networks.${NC}"
+    echo
+    
+    # Get list of available ethnode networks for preview
+    local available_networks=($(docker network ls --format "{{.Name}}" | grep "ethnode.*-net" | sort))
+    if [[ ${#available_networks[@]} -gt 0 ]]; then
+        echo -e "${BOLD}Networks that will be connected:${NC}"
+        for network in "${available_networks[@]}"; do
+            local node_name="${network%-net}"
+            echo -e "  • $node_name"
+        done
+        echo
+    else
+        echo -e "${YELLOW}⚠️  No ethnode networks found. Monitoring will be installed in isolated mode.${NC}"
+        echo
+    fi
+    
+    echo -e "${UI_MUTED}Starting automatic installation...${NC}"
+    echo
+    
+    # Install monitoring stack with all networks pre-selected
+    if install_monitoring_stack "${available_networks[@]}"; then
+        echo -e "${GREEN}✅ Monitoring plugin installed successfully!${NC}"
+        echo
+        echo -e "${BOLD}Access URLs:${NC}"
+        
+        # Get the actual machine IP since we use 0.0.0.0 for plugin installation
+        local actual_ip=$(hostname -I | awk '{print $1}' || echo "localhost")
+        echo -e "  • Grafana:    ${CYAN}http://${actual_ip}:3000${NC} (admin / check .env for password)"
+        echo -e "  • Prometheus: ${CYAN}http://${actual_ip}:9090${NC}"
+        echo
+        echo -e "${BOLD}Management:${NC}"
+        echo -e "  • Use 'Manage monitoring networks (DICKS)' to adjust connections${NC}"
+        echo
+        echo -e "${BOLD}Import dashboards from Grafana web UI:${NC}"
+        echo -e "  • Node Exporter Full: ID ${YELLOW}1860${NC}"
+        echo -e "  • Reth: ID ${YELLOW}22941${NC}"
+        echo -e "  • Besu: ID ${YELLOW}10273${NC}"
+        echo
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+    else
+        echo -e "${RED}❌ Failed to install monitoring plugin${NC}"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+    fi
+}
+
+# Update monitoring services - similar to ethnode update
+update_monitoring_services() {
+    if [[ ! -d "$HOME/monitoring" ]]; then
+        clear
+        print_header
+        print_box "Monitoring stack not installed" "warning"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    # Go directly to dashboard and show update options
+    clear
+    print_header
+    echo
+    
+    # Show monitoring status without full dashboard to avoid hanging
+    local prometheus_version="unknown"
+    local grafana_version="unknown"
+    local node_exporter_version="unknown"
+    
+    if cd "$HOME/monitoring" 2>/dev/null; then
+        if [[ -f .env ]]; then
+            prometheus_version=$(grep "^PROMETHEUS_VERSION=" .env 2>/dev/null | cut -d'=' -f2 || echo "unknown")
+            grafana_version=$(grep "^GRAFANA_VERSION=" .env 2>/dev/null | cut -d'=' -f2 || echo "unknown")
+            node_exporter_version=$(grep "^NODE_EXPORTER_VERSION=" .env 2>/dev/null | cut -d'=' -f2 || echo "unknown")
+        fi
+    fi
+    
+    echo -e "${CYAN}${BOLD}Current Monitoring Stack${NC}"
+    echo "========================"
+    echo
+    echo -e "  • Prometheus: ${YELLOW}${prometheus_version}${NC}"
+    echo -e "  • Grafana:    ${YELLOW}${grafana_version}${NC}"
+    echo -e "  • Node Exporter: ${YELLOW}${node_exporter_version}${NC}"
+    echo
+    
+    # Update options similar to ethnode update
+    local update_options=(
+        "Update all to latest versions"
+        "Update services to specific versions" 
+        "Back to monitoring menu"
+    )
+    
+    local selection
+    if selection=$(fancy_select_menu "Update Options" "${update_options[@]}"); then
+        case $selection in
+            0) update_all_monitoring_services ;;
+            1) update_monitoring_to_specific_versions ;;
+            2) return ;;
+        esac
+    fi
+}
+
+# Update all monitoring services to latest versions
+update_all_monitoring_services() {
+    # Source clients library for version fetching
+    [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
+    
+    clear
+    print_header
+    
+    echo -e "${CYAN}${BOLD}Updating All Monitoring Services${NC}"
+    echo "================================="
+    echo
+    echo -e "${UI_MUTED}This will update to the latest stable versions:${NC}"
+    
+    # Fetch latest versions dynamically
+    echo -e "${UI_MUTED}Checking for latest versions...${NC}"
+    local latest_prometheus=$(get_latest_version "prometheus" 2>/dev/null || echo "v3.5.0")
+    local latest_grafana=$(get_latest_version "grafana" 2>/dev/null || echo "12.1.0") 
+    local latest_node_exporter=$(get_latest_version "node-exporter" 2>/dev/null || echo "v1.9.1")
+    
+    # Normalize versions for Docker image compatibility
+    latest_prometheus=$(normalize_version "prometheus" "$latest_prometheus")
+    latest_grafana=$(normalize_version "grafana" "$latest_grafana")
+    latest_node_exporter=$(normalize_version "node-exporter" "$latest_node_exporter")
+    
+    echo -e "  • Prometheus: ${GREEN}${latest_prometheus}${NC}"
+    echo -e "  • Grafana: ${GREEN}${latest_grafana}${NC}"
+    echo -e "  • Node Exporter: ${GREEN}${latest_node_exporter}${NC}"
+    echo
+    echo -e "${YELLOW}⚠️  Services will be restarted${NC}"
+    echo
+    
+    echo -e "${UI_MUTED}Press Enter to continue or Ctrl+C to cancel...${NC}"
+    read -r
+    
+    cd "$HOME/monitoring"
+    
+    echo -e "${UI_MUTED}Updating .env file with latest versions...${NC}"
+    sudo sed -i "s/^PROMETHEUS_VERSION=.*/PROMETHEUS_VERSION=${latest_prometheus}/" .env
+    sudo sed -i "s/^GRAFANA_VERSION=.*/GRAFANA_VERSION=${latest_grafana}/" .env
+    sudo sed -i "s/^NODE_EXPORTER_VERSION=.*/NODE_EXPORTER_VERSION=${latest_node_exporter}/" .env
+    
+    echo -e "${UI_MUTED}Stopping services...${NC}"
+    docker compose down
+    
+    echo -e "${UI_MUTED}Pulling latest images...${NC}"
+    docker compose pull
+    
+    echo -e "${UI_MUTED}Starting updated services...${NC}"
+    docker compose up -d
+    
+    echo -e "${GREEN}✅ All monitoring services updated successfully${NC}"
+    echo
+    echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Update monitoring services to specific versions
+update_monitoring_to_specific_versions() {
+    clear
+    print_header
+    
+    echo -e "${CYAN}${BOLD}Update Services to Specific Versions${NC}"
+    echo "===================================="
+    echo
+    
+    cd "$HOME/monitoring"
+    source .env
+    
+    echo -e "${UI_MUTED}Current versions:${NC}"
+    echo -e "  • Prometheus: ${YELLOW}${PROMETHEUS_VERSION}${NC}"
+    echo -e "  • Grafana:    ${YELLOW}${GRAFANA_VERSION}${NC}" 
+    echo -e "  • Node Exporter: ${YELLOW}${NODE_EXPORTER_VERSION}${NC}"
+    echo
+    
+    echo -e "${UI_MUTED}Enter new versions (press Enter to keep current):${NC}"
+    echo
+    
+    # Get new versions from user
+    echo -n "Prometheus version (current: ${PROMETHEUS_VERSION}): "
+    read new_prometheus_version
+    [[ -z "$new_prometheus_version" ]] && new_prometheus_version="$PROMETHEUS_VERSION"
+    
+    echo -n "Grafana version (current: ${GRAFANA_VERSION}): "
+    read new_grafana_version
+    [[ -z "$new_grafana_version" ]] && new_grafana_version="$GRAFANA_VERSION"
+    
+    echo -n "Node Exporter version (current: ${NODE_EXPORTER_VERSION}): "
+    read new_node_exporter_version
+    [[ -z "$new_node_exporter_version" ]] && new_node_exporter_version="$NODE_EXPORTER_VERSION"
+    
+    echo
+    echo -e "${UI_MUTED}Will update to:${NC}"
+    echo -e "  • Prometheus: ${GREEN}${new_prometheus_version}${NC}"
+    echo -e "  • Grafana: ${GREEN}${new_grafana_version}${NC}"
+    echo -e "  • Node Exporter: ${GREEN}${new_node_exporter_version}${NC}"
+    echo
+    
+    echo -e "${UI_MUTED}Press Enter to continue or Ctrl+C to cancel...${NC}"
+    read -r
+    
+    # Update .env file with new versions
+    sed -i "s/PROMETHEUS_VERSION=.*/PROMETHEUS_VERSION=${new_prometheus_version}/" .env
+    sed -i "s/GRAFANA_VERSION=.*/GRAFANA_VERSION=${new_grafana_version}/" .env
+    sed -i "s/NODE_EXPORTER_VERSION=.*/NODE_EXPORTER_VERSION=${new_node_exporter_version}/" .env
+    
+    echo -e "${UI_MUTED}Stopping services...${NC}"
+    docker compose down
+    
+    echo -e "${UI_MUTED}Pulling specified versions...${NC}"
+    docker compose pull
+    
+    echo -e "${UI_MUTED}Starting updated services...${NC}"
+    docker compose up -d
+    
+    echo -e "${GREEN}✅ All services updated to specified versions${NC}"
+    echo
+    echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+    read -r
+}
+
+
+# Start/stop monitoring services
+manage_monitoring_state() {
+    if [[ ! -d "$HOME/monitoring" ]]; then
+        clear
+        print_header
+        print_box "Monitoring stack not installed" "warning"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    cd "$HOME/monitoring"
+    local running_services=$(docker compose ps --services --filter status=running 2>/dev/null)
+    
+    clear
+    print_header
+    
+    echo -e "${CYAN}${BOLD}Monitoring Services Status${NC}"
+    echo "=========================="
+    echo
+    
+    # Check service status
+    local all_running=true
+    for service in prometheus grafana node-exporter; do
+        if echo "$running_services" | grep -q "$service"; then
+            echo -e "  ✓ $service: ${GREEN}Running${NC}"
+        else
+            echo -e "  ✗ $service: ${RED}Stopped${NC}"
+            all_running=false
+        fi
+    done
+    
+    echo
+    
+    local action_options=()
+    if [[ "$all_running" == true ]]; then
+        action_options+=("Stop all services")
+        action_options+=("Restart all services")
+    else
+        action_options+=("Start all services")
+        if [[ -n "$running_services" ]]; then
+            action_options+=("Stop all services")
+            action_options+=("Restart all services")
+        fi
+    fi
+    action_options+=("Back to monitoring menu")
+    
+    local selection
+    if selection=$(fancy_select_menu "Service Management" "${action_options[@]}"); then
+        case "${action_options[$selection]}" in
+            "Start all services")
+                echo -e "${UI_MUTED}Starting monitoring services...${NC}"
+                docker compose up -d
+                echo -e "${GREEN}✅ Services started${NC}"
+                ;;
+            "Stop all services")
+                echo -e "${UI_MUTED}Stopping monitoring services...${NC}"
+                docker compose down
+                echo -e "${YELLOW}⏹️  Services stopped${NC}"
+                ;;
+            "Restart all services")
+                echo -e "${UI_MUTED}Restarting monitoring services...${NC}"
+                docker compose restart
+                echo -e "${GREEN}🔄 Services restarted${NC}"
+                ;;
+            "Back to monitoring menu")
+                return
+                ;;
+        esac
+        echo
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+    fi
+}
+
+# View monitoring service logs
+view_monitoring_logs() {
+    if [[ ! -d "$HOME/monitoring" ]]; then
+        clear
+        print_header
+        print_box "Monitoring stack not installed" "warning"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    cd "$HOME/monitoring"
+    local running_services=$(docker compose ps --services --filter status=running 2>/dev/null)
+    
+    if [[ -z "$running_services" ]]; then
+        clear
+        print_header
+        print_box "No monitoring services are currently running" "warning"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    clear
+    print_header
+    
+    echo -e "${CYAN}${BOLD}View Monitoring Logs${NC}"
+    echo "===================="
+    echo
+    
+    # Build log options for running services
+    local log_options=()
+    for service in prometheus grafana node-exporter; do
+        if echo "$running_services" | grep -q "$service"; then
+            log_options+=("View $service logs")
+        fi
+    done
+    log_options+=("View all logs (split screen)")
+    log_options+=("Back to monitoring menu")
+    
+    local selection
+    if selection=$(fancy_select_menu "Log Viewer" "${log_options[@]}"); then
+        if [[ $selection -lt 3 ]]; then
+            # Individual service logs
+            local service_name=""
+            local service_index=0
+            for service in prometheus grafana node-exporter; do
+                if echo "$running_services" | grep -q "$service"; then
+                    if [[ $service_index -eq $selection ]]; then
+                        service_name="$service"
+                        break
+                    fi
+                    ((service_index++))
+                fi
+            done
+            
+            if [[ -n "$service_name" ]]; then
+                clear
+                echo -e "${CYAN}${BOLD}$service_name Logs${NC} (Press Ctrl+C to exit)"
+                echo "===================="
+                echo
+                docker compose logs -f "$service_name"
+            fi
+        elif [[ "${log_options[$selection]}" == "View all logs (split screen)" ]]; then
+            # Split screen logs
+            clear
+            echo -e "${CYAN}${BOLD}All Monitoring Logs${NC} (Press Ctrl+C to exit)"
+            echo "========================"
+            echo
+            docker compose logs -f
+        fi
+    fi
 }

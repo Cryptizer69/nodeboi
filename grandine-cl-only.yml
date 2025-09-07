@@ -45,6 +45,7 @@ services:
       - grandine
       - --disable-upnp
       - --data-dir=/var/lib/grandine
+      - --network=${NETWORK}
       - --http-address=0.0.0.0
       - --http-port=5052
       - --http-allowed-origins=*

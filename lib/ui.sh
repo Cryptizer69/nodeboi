@@ -21,11 +21,17 @@ fancy_select_menu() {
     
     # Cache dashboard content for all fancy menus to avoid flickering
     local cached_dashboard=""
-    # Always source libraries and show dashboard
-    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
-    [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
-    if declare -f print_dashboard >/dev/null 2>&1; then
-        cached_dashboard=$(print_dashboard 2>/dev/null)
+    # Only cache dashboard for main menus, not simple option menus
+    if [[ "$title" == *"Options"* ]] || [[ "$title" == *"Update"* ]] || [[ "$title" == *"Select"* ]]; then
+        # Skip dashboard for simple option menus to improve performance
+        cached_dashboard=""
+    else
+        # Show dashboard for main navigation menus
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
+        [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
+        if declare -f print_dashboard >/dev/null 2>&1; then
+            cached_dashboard=$(print_dashboard 2>/dev/null)
+        fi
     fi
     
     # Hide cursor

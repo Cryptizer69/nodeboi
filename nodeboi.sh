@@ -52,9 +52,9 @@ main_menu() {
             "Manage nodes"
         )
         
-        # Add monitoring management if installed
-        if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" && -f "$HOME/monitoring/compose.yml" ]]; then
-            menu_options+=("Manage monitoring stack")
+        # Add monitoring management if monitoring stack is installed (running or stopped)
+        if [[ -d "$HOME/monitoring" ]]; then
+            menu_options+=("Manage monitoring")
         fi
         
         menu_options+=(
@@ -65,27 +65,28 @@ main_menu() {
 
         local selection
         if selection=$(fancy_select_menu "Main Menu" "${menu_options[@]}"); then
-            # Check if monitoring is installed to determine menu indices
-            local has_monitoring=false
-            [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" && -f "$HOME/monitoring/compose.yml" ]] && has_monitoring=true
+            # Check if monitoring is installed to determine correct menu indices
+            local monitoring_installed=false
+            if [[ -d "$HOME/monitoring" ]]; then
+                monitoring_installed=true
+            fi
             
-            # Dynamic menu handling
             if [[ $selection -eq 0 ]]; then
                 install_node
             elif [[ $selection -eq 1 ]]; then
                 manage_nodes_menu
-            elif [[ $selection -eq 2 && "$has_monitoring" == true ]]; then
-                # Manage monitoring stack
+            elif [[ $selection -eq 2 && "$monitoring_installed" == true ]]; then
+                # Load monitoring library and show monitoring management menu
                 [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
                 manage_monitoring_menu
-            elif [[ $selection -eq 2 && "$has_monitoring" == false ]] || [[ $selection -eq 3 && "$has_monitoring" == true ]]; then
-                # Plugins menu (for installations)
+            elif [[ $selection -eq 2 && "$monitoring_installed" == false ]] || [[ $selection -eq 3 && "$monitoring_installed" == true ]]; then
+                # Plugins menu
                 [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
-                manage_plugins_menu
-            elif [[ $selection -eq 3 && "$has_monitoring" == false ]] || [[ $selection -eq 4 && "$has_monitoring" == true ]]; then
-                # System
+                manage_plugins_menu 
+            elif [[ $selection -eq 3 && "$monitoring_installed" == false ]] || [[ $selection -eq 4 && "$monitoring_installed" == true ]]; then
+                # System menu
                 system_menu
-            elif [[ $selection -eq 4 && "$has_monitoring" == false ]] || [[ $selection -eq 5 && "$has_monitoring" == true ]]; then
+            elif [[ $selection -eq 4 && "$monitoring_installed" == false ]] || [[ $selection -eq 5 && "$monitoring_installed" == true ]]; then
                 # Quit
                 exit 0
             fi

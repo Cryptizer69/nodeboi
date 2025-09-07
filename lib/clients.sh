@@ -49,7 +49,7 @@ declare -gA VERSION_PREFIX=(
     ["grandine"]=""
     ["mevboost"]=""
     # Monitoring services
-    ["grafana"]="v"
+    ["grafana"]=""
     ["prometheus"]="v"
     ["node-exporter"]="v"
 )
@@ -110,6 +110,34 @@ normalize_version() {
         version="${version#v}"
     fi
     echo "$version"
+}
+
+# Universal version display function - always shows clean versions for dashboard
+display_version() {
+    local client=$1
+    local version=$2
+    
+    # Handle empty or unknown versions
+    [[ -z "$version" || "$version" == "unknown" || "$version" == "latest" ]] && echo "$version" && return
+    
+    # Clean up version string first
+    version=$(echo "$version" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # For dashboard display, we want consistent clean versions (no v prefix)
+    # This provides a unified display format regardless of how the version was obtained
+    local clean_version="${version#v}"
+    
+    # Handle special cases
+    case "$client" in
+        "mevboost"|"MEV-boost")
+            # MEV-boost versions should be clean (no v)
+            echo "$clean_version"
+            ;;
+        *)
+            # All other services show clean versions in dashboard
+            echo "$clean_version"
+            ;;
+    esac
 }
 
 # Get environment variable name for client
@@ -213,9 +241,14 @@ prompt_execution_client() {
     for client in "${EXECUTION_CLIENTS[@]}"; do
         client_options+=("${client^}")
     done
+    client_options+=("← Cancel")
     
     local selection
     if selection=$(fancy_select_menu "Select Execution Client" "${client_options[@]}"); then
+        if [[ $selection -eq ${#EXECUTION_CLIENTS[@]} ]]; then
+            # Cancel selected
+            return 1
+        fi
         echo "${EXECUTION_CLIENTS[$selection]}"
     fi
 }
@@ -225,9 +258,14 @@ prompt_consensus_client() {
     for client in "${CONSENSUS_CLIENTS[@]}"; do
         client_options+=("${client^}")
     done
+    client_options+=("← Cancel")
     
     local selection
     if selection=$(fancy_select_menu "Select Consensus Client" "${client_options[@]}"); then
+        if [[ $selection -eq ${#CONSENSUS_CLIENTS[@]} ]]; then
+            # Cancel selected
+            return 1
+        fi
         echo "${CONSENSUS_CLIENTS[$selection]}"
     fi
 }
