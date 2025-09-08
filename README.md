@@ -13,7 +13,7 @@ NODEBOI is a bash script that simplifies deploying and managing multiple Ethereu
 
 NODEBOI implements security best practices:
 
-- **Isolated Users**: Each node runs under its own system user (ethnode1, ethnode2, etc.)
+- **Current User**: All nodes run under the current user (eth-docker pattern)
 - **Isolated Networks**: Each node operates in its own Docker network namespace
 - **Separated Data**: Individual data directories per node (~/ethnode1, ~/ethnode2, etc.)
 - **JWT Authentication**: Secure communication between execution and consensus layers

@@ -1,0 +1,16 @@
+[1mNODEBOI Dashboard[0m
+=================
+
+  [0;32m●[0m ethnode1 (hoodi) [0;32m[M][0m
+     [0;32m✓[0m Besu (Syncing)       (25.8.0)	     http://localhost:8545
+     [0;32m✓[0m Lodestar             (1.33.0)	     http://localhost:5052
+     [0;32m✓[0m MEV-boost            (1.9)
+
+  [0;32m●[0m monitoring [0;31m[A][0m
+     [0;32m✓[0m Grafana              (12.1.0)	     http://192.168.2.52:3000
+     [0;32m✓[0m Prometheus           (3.5.0)
+     [0;32m✓[0m Node Exporter        (1.9.1)
+
+[38;5;240m─────────────────────────────[0m
+[38;5;240mLegend: [0;32m●[0m [38;5;240mRunning[0m | [0;31m●[0m [38;5;240mStopped[0m | [0;32m✓[0m [38;5;240mHealthy[0m | [0;31m✗[0m [38;5;240mUnhealthy[0m | [1;33m⬆[0m [38;5;240mUpdate[0m
+[38;5;240mAccess: [0;32m[M][0m [38;5;240mMy machine[0m | [1;33m[L][0m [38;5;240mLocal network[0m | [0;31m[A][0m [38;5;240mAll networks[0m

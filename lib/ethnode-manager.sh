@@ -160,32 +160,8 @@ validate_port() {
 
 prompt_node_name() {
     local default_name="ethnode$(get_next_instance_number)"
-    
-    while true; do
-        local node_name
-        node_name=$(fancy_text_input "Setup Node Name" \
-            "Enter a name for your Ethereum node:" \
-            "$default_name" \
-            "validate_node_name")
-        
-        # Return empty if user quit
-        [[ -z "$node_name" ]] && return 1
-        
-        # If user chose a non-default name, ask for confirmation
-        if [[ "$node_name" != "$default_name" ]]; then
-            if fancy_confirm "Confirm custom node name '$node_name'?" "y"; then
-                echo "$node_name"
-                return 0
-            else
-                # User said no, ask again
-                continue
-            fi
-        else
-            # Default name, no confirmation needed
-            echo "$node_name"
-            return 0
-        fi
-    done
+    echo "$default_name"
+    return 0
 }
 prompt_network() {
     local network_options=("Hoodi testnet" "Ethereum mainnet")
@@ -244,10 +220,36 @@ prompt_version() {
             echo -e "${UI_MUTED}Fetching latest version...${NC}" >&2
             selected_version=$(get_latest_version "$client_type" 2>/dev/null)
             if [[ -z "$selected_version" ]]; then
-                echo -e "${UI_MUTED}Could not fetch latest version from GitHub${NC}" >&2
+                echo -e "${YELLOW}⚠ Could not fetch latest version from GitHub API${NC}" >&2
+                echo -e "${UI_MUTED}This may be due to network issues or GitHub being unavailable${NC}" >&2
+                echo
+                echo -e "${UI_MUTED}Please enter a version manually. Check GitHub releases for current versions:${NC}"
+                echo -e "${UI_MUTED}  $(get_release_url "$client_type")${NC}"
+                echo
+                echo -e "${UI_MUTED}Version format examples:${NC}"
+                case "$client_type" in
+                    reth|lodestar) echo -e "${UI_MUTED}  • With 'v' prefix: v1.1.4, v1.25.0${NC}" ;;
+                    *) echo -e "${UI_MUTED}  • Without 'v' prefix: 24.12.0, 1.30.0${NC}" ;;
+                esac
+                echo
                 while [[ -z "$selected_version" ]]; do
-                    read -r -p "Enter version manually: " selected_version
-                    [[ -z "$selected_version" ]] && echo -e "${UI_MUTED}Version cannot be empty!${NC}" >&2
+                    read -r -p "Enter version: " selected_version
+                    if [[ -z "$selected_version" ]]; then
+                        echo -e "${UI_MUTED}Version cannot be empty!${NC}" >&2
+                    else
+                        # Validate the format
+                        if validate_client_version "$client_type" "$selected_version"; then
+                            echo -e "${GREEN}✓ Version $selected_version is available${NC}" >&2
+                        else
+                            echo -e "${YELLOW}⚠ Warning: Could not verify Docker image availability${NC}" >&2
+                            if fancy_confirm "Use version $selected_version anyway?" "n"; then
+                                echo -e "${UI_MUTED}Using unverified version: $selected_version${NC}" >&2
+                            else
+                                selected_version=""
+                                continue
+                            fi
+                        fi
+                    fi
                 done
             else
                 echo -e "${UI_MUTED}Latest version from GitHub: $selected_version${NC}" >&2
@@ -343,14 +345,13 @@ create_user() {
 
     [[ -z "$node_name" ]] && { echo "Error: Node name is empty" >&2; return 1; }
 
-    if ! id "$node_name" &>/dev/null; then
-        echo -e "${UI_MUTED}Creating system user...${NC}" >&2
-        sudo useradd -r -s /bin/false "$node_name" || { echo "Error: Failed to create user" >&2; return 1; }
-    else
-        echo -e "${UI_MUTED}User $node_name already exists, skipping...${NC}" >&2
-    fi
+    # Use current user (eth-docker pattern - no system user needed)
+    local node_uid=$(id -u)
+    local node_gid=$(id -g)
+    
+    echo -e "${UI_MUTED}Using current user: UID=${node_uid}, GID=${node_gid}${NC}" >&2
 
-    echo "$(id -u "$node_name"):$(id -g "$node_name")"
+    echo "${node_uid}:${node_gid}"
 }
 generate_jwt() {
     local node_dir="$1"
@@ -365,11 +366,12 @@ set_permissions() {
     local node_dir="$1"
     local uid_gid="$2"
 
-    local uid=$(echo "$uid_gid" | cut -d':' -f1)
-    local gid=$(echo "$uid_gid" | cut -d':' -f2)
-
     echo -e "${UI_MUTED}Setting permissions...${NC}" >&2
-    sudo chown -R "$uid:$gid" "$node_dir"/{data,jwt}
+    # Using current user - permissions should already be correct, but ensure directory access
+    chmod 755 "$node_dir/data"
+    chmod 755 "$node_dir/data/execution" "$node_dir/data/consensus"
+    chmod 700 "$node_dir/jwt"
+    chmod 600 "$node_dir/jwt/jwtsecret"
 }
 copy_config_files() {
     local node_dir="$1"
@@ -507,7 +509,7 @@ cleanup_failed_installation() {
     echo -e "${UI_MUTED}Cleaning up failed installation...${NC}" >&2
 
     [[ -d "$node_dir" ]] && { rm -rf "$node_dir"; echo "Removed directory: $node_dir" >&2; }
-    id "$node_name" &>/dev/null && { sudo userdel "$node_name" 2>/dev/null || true; echo "Removed user: $node_name" >&2; }
+    # No system user cleanup needed - using current user
 }
 
 install_node() {
@@ -580,7 +582,9 @@ install_node() {
             echo
             read -p "Do you want to continue anyway? [y/n]: " -r
             echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${UI_MUTED}Continuing with installation...${NC}"
+            else
                 echo -e "${UI_MUTED}Installation cancelled. Try again with different versions.${NC}"
                 press_enter
                 return
@@ -597,10 +601,10 @@ install_node() {
         return
     }
 
-    # Create system user
+    # Get current user UID/GID
     local uid_gid=$(create_user "$node_name")
     [[ -z "$uid_gid" ]] && {
-        echo -e "${RED}Installation failed - could not create user${NC}" >&2
+        echo -e "${RED}Installation failed - could not get user info${NC}" >&2
         cleanup_failed_installation "$node_name"
         press_enter
         return
@@ -764,12 +768,14 @@ install_node() {
 
     echo -e "${UI_PRIMARY}Launch $node_name now? [y/n]:${NC} " && read -r
     echo
-    [[ $REPLY =~ ^[Nn]$ ]] && { 
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z "$REPLY" ]]; then
+        echo -e "${UI_MUTED}Launching $node_name...${NC}"
+    else
         echo -e "${UI_MUTED}Installation cancelled.${NC}"
         cleanup_failed_installation "$node_name"
         press_enter
         return
-    }
+    fi
 
     # Set file permissions
     set_permissions "$node_dir" "$uid_gid" || {
@@ -978,6 +984,9 @@ EOF
             echo -e "${UI_MUTED}  docker compose up -d${NC}"
         fi
     setup_nodeboi_service
+
+    # Refresh dashboard to show new node
+    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
 
     echo
     echo -e "${GREEN}[✓] Installation complete.${NC}"

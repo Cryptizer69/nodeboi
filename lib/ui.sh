@@ -19,20 +19,8 @@ fancy_select_menu() {
     local selected=0
     local total=${#options[@]}
     
-    # Cache dashboard content for all fancy menus to avoid flickering
-    local cached_dashboard=""
-    # Only cache dashboard for main menus, not simple option menus
-    if [[ "$title" == *"Options"* ]] || [[ "$title" == *"Update"* ]] || [[ "$title" == *"Select"* ]]; then
-        # Skip dashboard for simple option menus to improve performance
-        cached_dashboard=""
-    else
-        # Show dashboard for main navigation menus
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
-        [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
-        if declare -f print_dashboard >/dev/null 2>&1; then
-            cached_dashboard=$(print_dashboard 2>/dev/null)
-        fi
-    fi
+    # ALWAYS show dashboard consistently - no exceptions
+    local dashboard_cache_file="$HOME/.nodeboi/cache/dashboard.cache"
     
     # Hide cursor
     printf '\033[?25l' >&2
@@ -53,14 +41,25 @@ fancy_select_menu() {
             print_header >&2
         fi
         
-        # Show cached dashboard for all menus
-        if [[ -n "$cached_dashboard" ]]; then
-            echo -e "$cached_dashboard" >&2
+        # Show fresh dashboard for all menus - read from cache file each time
+        local current_dashboard=""
+        if [[ -f "$dashboard_cache_file" ]]; then
+            current_dashboard=$(cat "$dashboard_cache_file" 2>/dev/null)
+        else
+            current_dashboard="NODEBOI Dashboard
+=================
+
+  Dashboard loading...
+"
+        fi
+        
+        if [[ -n "$current_dashboard" ]]; then
+            echo -e "$current_dashboard" >&2
             echo >&2  # Add blank line after dashboard
         fi
         
         if [[ -n "$title" ]]; then
-            echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}\n" >&2
+            echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}" >&2
             printf "${UI_MUTED}%*s${UI_RESET}\n" "${#title}" '' | tr ' ' '=' >&2
             echo >&2
         fi
@@ -169,7 +168,7 @@ fancy_text_input() {
         fi
         
         if [[ -n "$title" ]]; then
-            echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}\n" >&2
+            echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}" >&2
             printf "${UI_MUTED}%*s${UI_RESET}\n" "${#title}" '' | tr ' ' '=' >&2
             echo >&2
         fi

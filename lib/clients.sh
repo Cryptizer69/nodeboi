@@ -54,20 +54,6 @@ declare -gA VERSION_PREFIX=(
     ["node-exporter"]="v"
 )
 
-# Fallback versions when API fails
-declare -gA FALLBACK_VERSIONS=(
-    ["reth"]="v1.1.0"
-    ["besu"]="24.10.0"
-    ["nethermind"]="1.29.0"
-    ["teku"]="24.10.3"
-    ["lodestar"]="v1.22.0"
-    ["grandine"]="0.5.0"
-    ["mevboost"]="1.9"
-    # Monitoring services
-    ["grafana"]="v11.3.0"
-    ["prometheus"]="v3.5.0"
-    ["node-exporter"]="v1.9.1"
-)
 
 # ============ DEDUPLICATED FUNCTIONS ============
 
@@ -194,7 +180,8 @@ get_latest_version() {
         echo "${client}:${version}:$(date +%s)" >> "$cache_file"
         echo "$version"
     else
-        echo "${FALLBACK_VERSIONS[$client]}"
+        # API failed - return empty and let caller handle the failure
+        return 1
     fi
 }
 

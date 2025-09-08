@@ -1,0 +1,5 @@
+#!/bin/bash
+# Simple network management shortcut - bypasses all menu complexity
+
+cd ~/.nodeboi
+exec ./manage_networks.sh

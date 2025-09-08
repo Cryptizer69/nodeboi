@@ -2,8 +2,13 @@
 # lib/manage.sh - Node management and monitoring
 
 # Source dependencies
-source "${NODEBOI_LIB}/clients.sh"
-[[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh"
+[[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null || true
+[[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh" 2>/dev/null || true
+
+# Pre-load monitoring functions to ensure they're always available
+for monitoring_path in "${NODEBOI_LIB}/monitoring.sh" "lib/monitoring.sh" "$(dirname "${BASH_SOURCE[0]}")/monitoring.sh" "$HOME/.nodeboi/lib/monitoring.sh"; do
+    [[ -f "$monitoring_path" ]] && source "$monitoring_path" 2>/dev/null && break
+done
 
 # Configuration
 CHECK_UPDATES="${CHECK_UPDATES:-true}"
@@ -40,7 +45,7 @@ check_prerequisites() {
     local missing_tools=()
     local install_docker=false
 
-    for tool in wget curl openssl ufw; do
+    for tool in wget curl openssl; do
         if command -v "$tool" &> /dev/null; then
             echo -e "  ${UI_MUTED}$tool: ${GREEN}✓${NC}"
         else
@@ -76,7 +81,6 @@ check_prerequisites() {
                 wget) echo -e "${UI_MUTED}  • wget - needed for downloading client binaries${NC}" ;;
                 curl) echo -e "${UI_MUTED}  • curl - needed for API calls and version checks${NC}" ;;
                 openssl) echo -e "${UI_MUTED}  • openssl - needed for generating JWT secrets${NC}" ;;
-                ufw) echo -e "${UI_MUTED}  • ufw - firewall management for node security${NC}" ;;
             esac
         done
 
@@ -86,7 +90,7 @@ check_prerequisites() {
         read -p "Would you like to install the missing prerequisites now? [y/n]: " -r
         echo
 
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${UI_MUTED}Installing missing tools...${NC}"
 
             sudo apt update
@@ -169,12 +173,15 @@ remove_node() {
     local node_name="$1"
     local node_dir="$HOME/$node_name"
 
+    # Temporarily disable exit on error for cleanup operations
+    set +e
+    
     echo -e "${UI_MUTED}Removing $node_name...${NC}" >&2
 
-    # Stop and remove containers using safe stop
+    # Stop and remove containers using docker compose down
     if [[ -f "$node_dir/compose.yml" ]]; then
         echo -e "${UI_MUTED}  Stopping containers...${NC}" >&2
-        safe_docker_stop "$node_name"
+        cd "$node_dir" && docker compose down 2>/dev/null || safe_docker_stop "$node_name"
     fi
 
     # Remove any remaining containers
@@ -197,12 +204,68 @@ remove_node() {
         done
     fi
 
-    # Remove network, directory, and user
-    docker network rm "${node_name}-net" 2>/dev/null || true
-    [[ -d "$node_dir" ]] && sudo rm -rf "$node_dir"
-    id "$node_name" &>/dev/null && sudo userdel -r "$node_name" 2>/dev/null || true
+    # Remove ethnode from monitoring configuration if monitoring exists
+    if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+        source "${NODEBOI_LIB}/monitoring.sh"
+        remove_ethnode_from_monitoring "$node_name"
+    fi
+    
+    # Robust network cleanup
+    echo -e "${UI_MUTED}  Removing Docker network...${NC}" >&2
+    local network_name="${node_name}-net"
+    
+    # Step 1: Disconnect any remaining containers from the network
+    local connected_containers=$(docker network inspect "$network_name" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+    if [[ -n "$connected_containers" ]]; then
+        echo -e "${UI_MUTED}    Disconnecting remaining containers from network...${NC}" >&2
+        for container in $connected_containers; do
+            echo -e "${UI_MUTED}      Disconnecting: $container${NC}" >&2
+            docker network disconnect "$network_name" "$container" 2>/dev/null || true
+        done
+    fi
+    
+    # Step 2: Remove the network (try multiple times if needed)
+    local attempts=0
+    local max_attempts=3
+    while [[ $attempts -lt $max_attempts ]]; do
+        if docker network rm "$network_name" 2>/dev/null; then
+            echo -e "${UI_MUTED}    ✓ Network $network_name removed${NC}" >&2
+            break
+        else
+            attempts=$((attempts + 1))
+            if [[ $attempts -lt $max_attempts ]]; then
+                echo -e "${UI_MUTED}    Network removal failed, waiting and retrying (${attempts}/${max_attempts})...${NC}" >&2
+                sleep 2
+            else
+                echo -e "${YELLOW}    ⚠ Could not remove network $network_name (may not exist)${NC}" >&2
+            fi
+        fi
+    done
+    
+    # Try to remove directory with multiple fallback methods
+    if [[ -d "$node_dir" ]]; then
+        # Method 1: Try sudo (will fail silently if no sudo access)
+        if sudo rm -rf "$node_dir" 2>/dev/null; then
+            echo -e "${UI_MUTED}    Directory removed with sudo${NC}" >&2
+        else
+            echo -e "${UI_MUTED}    Sudo not available, trying Docker cleanup...${NC}" >&2
+            # Method 2: Use Docker container to remove files as root
+            if docker run --rm -v "$node_dir":/remove alpine sh -c "rm -rf /remove/* && rm -rf /remove/.* 2>/dev/null || true" 2>/dev/null; then
+                # Remove the now-empty directory
+                rmdir "$node_dir" 2>/dev/null || rm -rf "$node_dir" 2>/dev/null || true
+                echo -e "${UI_MUTED}    Directory cleaned with Docker${NC}" >&2
+            else
+                echo -e "${YELLOW}    Warning: Could not fully clean directory $node_dir${NC}" >&2
+            fi
+        fi
+    fi
+    
+    # No system user cleanup needed - using current user pattern
 
     echo -e "${UI_MUTED}  ✓ $node_name removed successfully${NC}" >&2
+    
+    # Re-enable exit on error
+    set -e
 }
 remove_nodes_menu() {
     # List existing nodes
@@ -234,6 +297,7 @@ remove_nodes_menu() {
         if fancy_confirm "Remove $node_to_remove? This cannot be undone!" "n"; then
             echo -e "\n${UI_MUTED}Removing $node_to_remove...${NC}\n"
             remove_node "$node_to_remove"
+            force_refresh_dashboard
             echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
         else
             print_box "Removal cancelled" "info"
@@ -401,8 +465,8 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
             # Try to extract MEV-boost version from docker container
             local container_name=$(docker ps --format "table {{.Names}}" | grep "$node_name-mevboost" | head -1)
             if [[ -n "$container_name" ]]; then
-                # Extract version from image tag (e.g., flashbots/mev-boost:1.9 -> 1.9)
-                mevboost_version=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null | grep -o ':[0-9][0-9.]*$' | cut -c2- || echo "latest")
+                # Extract version from image tag (e.g., flashbots/mev-boost:1.9 -> 1.9, flashbots/mev-boost:v1.9 -> v1.9)
+                mevboost_version=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null | grep -o ':[v]*[0-9][0-9.]*$' | cut -c2- || echo "latest")
                 [[ -z "$mevboost_version" ]] && mevboost_version="latest"
             fi
         fi
@@ -450,27 +514,48 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
         # Execution client line
         printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
-            "$el_check" "${exec_client}${el_sync_status}" "$exec_version" "$exec_update_indicator" "$endpoint_host" "$el_rpc"
+            "$el_check" "${exec_client}${el_sync_status}" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator" "$endpoint_host" "$el_rpc"
 
         # Consensus client line
         printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
-            "$cl_check" "${cons_client}${cl_sync_status}" "$cons_version" "$cons_update_indicator" "$endpoint_host" "$cl_rest"
+            "$cl_check" "${cons_client}${cl_sync_status}" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator" "$endpoint_host" "$cl_rest"
 
         # MEV-boost line (only show if it's running)
         if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]]; then
             printf "     %b %-20s (%s)%b\n" \
-                "$mevboost_check" "MEV-boost" "$mevboost_version" "$mevboost_update_indicator"
+                "$mevboost_check" "MEV-boost" "$(display_version "mevboost" "$mevboost_version")" "$mevboost_update_indicator"
         fi
     else
         echo -e "  ${RED}●${NC} $node_name ($network) - ${RED}Stopped${NC}"
-        printf "     %-20s (%s)%b\n" "$exec_client" "$exec_version" "$exec_update_indicator"
-        printf "     %-20s (%s)%b\n" "$cons_client" "$cons_version" "$cons_update_indicator"
+        printf "     %-20s (%s)%b\n" "$exec_client" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator"
+        printf "     %-20s (%s)%b\n" "$cons_client" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator"
     fi
 
     echo
 }
-print_dashboard() {
-    cleanup_version_cache 
+# Stub functions for missing dependencies to prevent delays
+cleanup_version_cache() { return 0; }
+check_service_update() { echo ""; }
+display_version() { echo "${2:-unknown}"; }
+
+# Generate fresh dashboard with health checks
+generate_dashboard() {
+    # Define colors if not already defined
+    [[ -z "$RED" ]] && RED='\033[0;31m'
+    [[ -z "$GREEN" ]] && GREEN='\033[0;32m'
+    [[ -z "$YELLOW" ]] && YELLOW='\033[1;33m'
+    [[ -z "$CYAN" ]] && CYAN='\033[0;36m'
+    [[ -z "$BOLD" ]] && BOLD='\033[1m'
+    [[ -z "$NC" ]] && NC='\033[0m'
+    [[ -z "$UI_MUTED" ]] && UI_MUTED='\033[38;5;240m'
+    
+    # Monitoring functions should be pre-loaded when manage.sh is sourced
+    
+    # Disable update checking for dashboard generation to improve speed
+    local original_check_updates="$CHECK_UPDATES"
+    CHECK_UPDATES="false"
+    
+    cleanup_version_cache 2>/dev/null || true 
     echo -e "${BOLD}NODEBOI Dashboard${NC}\n=================\n"
 
     local found=false
@@ -483,25 +568,97 @@ print_dashboard() {
     
     # Check for monitoring stack and display it
     if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" && -f "$HOME/monitoring/compose.yml" ]]; then
-        # Load monitoring.sh functions if not already loaded
-        if ! command -v check_monitoring_health &> /dev/null; then
-            [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
-        fi
-        
+        # Monitoring functions are pre-loaded, just call them
         if command -v check_monitoring_health &> /dev/null; then
-            check_monitoring_health
+            check_monitoring_health | sed '$d'  # Remove last blank line
         fi
         found=true
     fi
-
     if [[ "$found" == false ]]; then
         echo -e "${UI_MUTED}  No nodes installed${NC}\n"
     else
         echo -e "${UI_MUTED}─────────────────────────────${NC}"
         echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC} ${UI_MUTED}Update${NC}"
         echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${YELLOW}[L]${NC} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All networks${NC}"
-        echo
     fi
+    # Restore original CHECK_UPDATES setting
+    CHECK_UPDATES="$original_check_updates"
+}
+
+# Dashboard caching system
+DASHBOARD_CACHE_FILE="$HOME/.nodeboi/cache/dashboard.cache"
+DASHBOARD_CACHE_DURATION=300  # 5 minutes
+
+# Check if dashboard cache is valid
+is_dashboard_cache_valid() {
+    [[ -f "$DASHBOARD_CACHE_FILE" ]] || return 1
+    
+    local cache_time=$(stat -c %Y "$DASHBOARD_CACHE_FILE" 2>/dev/null)
+    local current_time=$(date +%s)
+    
+    [[ -n "$cache_time" ]] && [[ $((current_time - cache_time)) -lt $DASHBOARD_CACHE_DURATION ]]
+}
+
+# Bulletproof dashboard cache generation
+refresh_dashboard_cache() {
+    local cache_file="$HOME/.nodeboi/cache/dashboard.cache"
+    mkdir -p "$(dirname "$cache_file")"
+    
+    # Set working directory to nodeboi home to ensure relative paths work
+    local original_pwd="$PWD"
+    cd "$HOME/.nodeboi" 2>/dev/null || return 1
+    
+    # Ensure NODEBOI_LIB is set correctly
+    export NODEBOI_LIB="$HOME/.nodeboi/lib"
+    
+    # Load ALL required libraries explicitly
+    [[ -f "lib/clients.sh" ]] && source "lib/clients.sh" 2>/dev/null || true
+    [[ -f "lib/monitoring.sh" ]] && source "lib/monitoring.sh" 2>/dev/null || true
+    [[ -f "lib/port-manager.sh" ]] && source "lib/port-manager.sh" 2>/dev/null || true
+    
+    # Generate dashboard with error handling
+    if generate_dashboard > "$cache_file" 2>/dev/null; then
+        # Ensure cache file is not empty
+        if [[ ! -s "$cache_file" ]]; then
+            echo "NODEBOI Dashboard" > "$cache_file"
+            echo "=================" >> "$cache_file"
+            echo "" >> "$cache_file"
+            echo "  Dashboard generation failed" >> "$cache_file"
+            echo "" >> "$cache_file"
+        fi
+    else
+        # Fallback if generation fails
+        cat > "$cache_file" << 'EOF'
+NODEBOI Dashboard
+=================
+
+  Dashboard temporarily unavailable
+
+EOF
+    fi
+    
+    # Restore original directory
+    cd "$original_pwd" 2>/dev/null || true
+}
+
+# Print dashboard (ALWAYS uses cache, never regenerates)
+print_dashboard() {
+    local cache_file="$HOME/.nodeboi/cache/dashboard.cache"
+    
+    if [[ -f "$cache_file" ]]; then
+        cat "$cache_file" 2>/dev/null
+    else
+        echo "NODEBOI Dashboard"
+        echo "================="
+        echo ""
+        echo "  Dashboard not available"
+        echo ""
+    fi
+}
+
+# Force refresh dashboard cache (call this after service state changes)
+force_refresh_dashboard() {
+    refresh_dashboard_cache
 }
 
 
@@ -619,6 +776,7 @@ manage_node_state() {
                 if [[ "${node_status[$i]}" == "Stopped" ]]; then
                     echo -e "${UI_MUTED}Starting ${nodes[$i]}...${NC}"
                     cd "$HOME/${nodes[$i]}" && docker compose up -d > /dev/null 2>&1
+                    force_refresh_dashboard
                 fi
             done
             print_box "All stopped nodes started" "success"
@@ -629,6 +787,7 @@ manage_node_state() {
             for i in "${!nodes[@]}"; do
                 if [[ "${node_status[$i]}" == "Running" ]]; then
                     safe_docker_stop "${nodes[$i]}"
+                    force_refresh_dashboard
                 fi
             done
             print_box "All running nodes stopped" "success"
@@ -656,11 +815,13 @@ manage_node_state() {
                     0)
                         echo -e "\n${YELLOW}Starting $node_name...${NC}"
                         cd "$node_dir" && docker compose up -d > /dev/null 2>&1
+                        force_refresh_dashboard
                         print_box "$node_name started" "success"
                         ;;
                     1)
                         echo -e "\n${UI_MUTED}Stopping $node_name...${NC}"
                         safe_docker_stop "$node_name"
+                        force_refresh_dashboard
                         print_box "$node_name stopped" "success"
                         ;;
                     2)
@@ -1240,4 +1401,85 @@ get_node_list() {
         fi
     done
     echo "${nodes[@]}"
+}
+
+# Clean up orphaned Docker networks from removed ethnodes
+cleanup_orphaned_networks() {
+    echo -e "\n${CYAN}${BOLD}Clean Up Orphaned Networks${NC}"
+    echo "============================="
+    echo
+    echo -e "${UI_MUTED}Scanning for orphaned ethnode networks...${NC}"
+    
+    local orphaned_networks=()
+    local active_networks=()
+    
+    # Get all ethnode-* networks from Docker
+    while IFS= read -r network_name; do
+        if [[ "$network_name" =~ ^ethnode[0-9]+-net$ ]]; then
+            local node_name="${network_name%-net}"
+            local node_dir="$HOME/$node_name"
+            
+            # Check if corresponding ethnode directory exists
+            if [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
+                active_networks+=("$network_name")
+            else
+                orphaned_networks+=("$network_name")
+            fi
+        fi
+    done < <(docker network ls --format "{{.Name}}" 2>/dev/null)
+    
+    echo
+    if [[ ${#active_networks[@]} -gt 0 ]]; then
+        echo -e "${GREEN}Active networks (will be preserved):${NC}"
+        for network in "${active_networks[@]}"; do
+            echo -e "${UI_MUTED}  ✓ $network${NC}"
+        done
+        echo
+    fi
+    
+    if [[ ${#orphaned_networks[@]} -eq 0 ]]; then
+        echo -e "${GREEN}✓ No orphaned networks found${NC}"
+        echo
+        press_enter
+        return
+    fi
+    
+    echo -e "${YELLOW}Orphaned networks found (no corresponding ethnode):${NC}"
+    for network in "${orphaned_networks[@]}"; do
+        echo -e "${UI_MUTED}  • $network${NC}"
+    done
+    echo
+    
+    read -p "Remove these orphaned networks? [y/n]: " -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${UI_MUTED}Removing orphaned networks...${NC}"
+        for network_name in "${orphaned_networks[@]}"; do
+            echo -e "${UI_MUTED}  Removing $network_name...${NC}"
+            
+            # Disconnect any remaining containers
+            local connected_containers=$(docker network inspect "$network_name" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+            if [[ -n "$connected_containers" ]]; then
+                for container in $connected_containers; do
+                    echo -e "${UI_MUTED}    Disconnecting: $container${NC}"
+                    docker network disconnect "$network_name" "$container" 2>/dev/null || true
+                done
+            fi
+            
+            # Remove the network
+            if docker network rm "$network_name" 2>/dev/null; then
+                echo -e "${UI_MUTED}    ✓ $network_name removed${NC}"
+            else
+                echo -e "${YELLOW}    ⚠ Could not remove $network_name${NC}"
+            fi
+        done
+        echo
+        echo -e "${GREEN}✓ Orphaned network cleanup complete${NC}"
+    else
+        echo -e "${UI_MUTED}Cleanup cancelled${NC}"
+    fi
+    
+    echo
+    press_enter
 }

@@ -7,6 +7,6 @@ x-logging: &logging
      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 networks:
- default:
-   name: ${NODE_NAME:-ethnode1}-net
-   driver: bridge
+  default:
+    name: ${NODE_NAME:-ethnode1}-net
+    driver: bridge

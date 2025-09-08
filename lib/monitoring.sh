@@ -32,6 +32,200 @@ discover_nodeboi_networks() {
 }
 
 # Generate Prometheus scrape configs for discovered services
+# Remove a specific ethnode network from monitoring configuration
+remove_ethnode_from_monitoring() {
+    local node_name="$1"
+    local monitoring_dir="$HOME/monitoring"
+    
+    # Check if monitoring stack exists
+    if [[ ! -d "$monitoring_dir" ]]; then
+        return 0  # No monitoring stack, nothing to do
+    fi
+    
+    echo -e "${UI_MUTED}  Removing $node_name from monitoring configuration...${NC}" >&2
+    
+    # Get current networks that monitoring is connected to
+    local current_networks=()
+    if [[ -f "$monitoring_dir/compose.yml" ]]; then
+        # Extract external networks from compose.yml
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*name:[[:space:]]*(.+)-net$ ]]; then
+                local network_name="${BASH_REMATCH[1]}"
+                if [[ "$network_name" != "monitoring" && "$network_name" != "$node_name" ]]; then
+                    current_networks+=("${network_name}-net")
+                fi
+            fi
+        done < "$monitoring_dir/compose.yml"
+    fi
+    
+    # Regenerate Prometheus config without the removed node
+    if [[ ${#current_networks[@]} -gt 0 ]]; then
+        echo -e "${UI_MUTED}    Updating Prometheus configuration...${NC}" >&2
+        
+        # Recreate prometheus.yml without the removed node
+        cat > "$monitoring_dir/prometheus.yml" <<EOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+EOF
+        
+        # Add remaining targets
+        local prometheus_targets=$(generate_prometheus_targets "${current_networks[@]}")
+        echo "$prometheus_targets" >> "$monitoring_dir/prometheus.yml"
+        
+        # Regenerate monitoring compose.yml with updated networks
+        if docker ps -q --filter "name=monitoring-" >/dev/null 2>&1; then
+            echo -e "${UI_MUTED}    Updating monitoring configuration to remove ${node_name}-net...${NC}" >&2
+            cd "$monitoring_dir" && docker compose down >/dev/null 2>&1 || true
+            
+            # Get current configuration from .env
+            local bind_ip=$(grep "BIND_IP=" "$monitoring_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            local grafana_password=$(grep "GRAFANA_PASSWORD=" "$monitoring_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            
+            # Regenerate the entire compose.yml with remaining networks
+            echo -e "${UI_MUTED}    Regenerating compose.yml with remaining networks...${NC}" >&2
+            
+            # Create new compose.yml (simplified version for network update)
+            cat > "$monitoring_dir/compose.yml" <<EOF
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  prometheus:
+    image: prom/prometheus:\${PROMETHEUS_VERSION}
+    container_name: monitoring-prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--web.external-url=http://localhost:\${PROMETHEUS_PORT}'
+    ports:
+      - "\${BIND_IP}:\${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+EOF
+
+            # Add remaining ethnode networks to services
+            for network in "${current_networks[@]}"; do
+                echo "      - $network" >> "$monitoring_dir/compose.yml"
+            done
+
+            # Continue with rest of compose.yml
+            cat >> "$monitoring_dir/compose.yml" <<EOF
+    depends_on:
+      - node-exporter
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  grafana:
+    image: grafana/grafana:\${GRAFANA_VERSION}
+    container_name: monitoring-grafana
+    restart: unless-stopped
+    user: "\${NODE_UID}:\${NODE_GID}"
+    ports:
+      - "\${BIND_IP}:\${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:\${GRAFANA_PORT}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - monitoring
+EOF
+
+            # Add remaining ethnode networks to grafana
+            for network in "${current_networks[@]}"; do
+                echo "      - $network" >> "$monitoring_dir/compose.yml"
+            done
+
+            # Finish compose.yml
+            cat >> "$monitoring_dir/compose.yml" <<EOF
+    depends_on:
+      - prometheus
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  node-exporter:
+    image: prom/node-exporter:\${NODE_EXPORTER_VERSION}
+    container_name: monitoring-node-exporter
+    restart: unless-stopped
+    user: "root"
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\$|/)'
+    ports:
+      - "127.0.0.1:\${NODE_EXPORTER_PORT}:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_TIME
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+volumes:
+  prometheus_data:
+    name: monitoring_prometheus_data
+  grafana_data:
+    name: monitoring_grafana_data
+
+networks:
+  monitoring:
+    name: monitoring-net
+    driver: bridge
+EOF
+
+            # Add external network definitions
+            for network in "${current_networks[@]}"; do
+                cat >> "$monitoring_dir/compose.yml" <<EOF
+  $network:
+    external: true
+    name: $network
+EOF
+            done
+
+            echo -e "${UI_MUTED}    Restarting monitoring with updated configuration...${NC}" >&2
+            docker compose up -d >/dev/null 2>&1 || true
+        fi
+    else
+        echo -e "${UI_MUTED}    No other networks to monitor${NC}" >&2
+    fi
+}
+
 generate_prometheus_targets() {
     local selected_networks=("$@")
     local prometheus_configs=""
@@ -141,13 +335,10 @@ install_monitoring_stack() {
     echo -e "${UI_MUTED}Setting up directories and user...${NC}"
     mkdir -p ~/monitoring/grafana/provisioning/datasources
     
-    # Create monitoring user
-    if ! id "monitoring" &>/dev/null; then
-        sudo useradd -r -s /bin/false monitoring
-    fi
-    local NODE_UID=$(id -u monitoring)
-    local NODE_GID=$(id -g monitoring)
-    echo -e "${UI_MUTED}  Monitoring user: monitoring (${NODE_UID}:${NODE_GID})${NC}"
+    # Use current user (eth-docker pattern - no system user needed)
+    local NODE_UID=$(id -u)
+    local NODE_GID=$(id -g)
+    echo -e "${UI_MUTED}  Using current user: UID=${NODE_UID}, GID=${NODE_GID}${NC}"
     
     # Step 2: Get Grafana password
     echo
@@ -367,7 +558,7 @@ volumes:
 
 networks:
   monitoring:
-    name: ${MONITORING_NAME}-net
+    name: monitoring-net
     driver: bridge
 EOF
     
@@ -413,7 +604,10 @@ EOF
     
     # Step 10: Set permissions
     echo -e "${UI_MUTED}Setting permissions...${NC}"
-    sudo chown -R ${NODE_UID}:${NODE_GID} ~/monitoring/
+    # Ensure proper permissions on directories (already owned by current user)
+    chmod 755 ~/monitoring/
+    chmod 755 ~/monitoring/grafana/provisioning/
+    chmod 755 ~/monitoring/grafana/provisioning/datasources/
     
     # Step 11: Launch monitoring stack
     echo -e "${UI_MUTED}Starting monitoring stack...${NC}"
@@ -445,6 +639,9 @@ EOF
             echo -e "${UI_MUTED}  • Node Exporter Full: ID 1860${NC}"
             echo -e "${UI_MUTED}  • Reth: ID 22941${NC}"
             echo -e "${UI_MUTED}  • Besu: ID 10273${NC}"
+            echo
+            echo -e "${YELLOW}💡 Tip: You can view these credentials later in:${NC}"
+            echo -e "${UI_MUTED}   Main Menu → Manage services → Manage monitoring → See Grafana login information${NC}"
         else
             echo -e "${RED}Failed to start monitoring stack${NC}"
             docker compose logs --tail=20
@@ -488,6 +685,9 @@ view_grafana_credentials() {
     echo -e "  Username: ${GREEN}admin${NC}"
     echo -e "  Password: ${GREEN}${grafana_password}${NC}"
     
+    # Refresh dashboard to show monitoring stack
+    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
+
     echo
     echo -e "${UI_MUTED}Press Enter to continue...${NC}"
     read -r
@@ -697,13 +897,21 @@ remove_monitoring_stack() {
     echo -e "${UI_MUTED}Stopping monitoring containers...${NC}"
     cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
     
+    echo -e "${UI_MUTED}Removing monitoring network...${NC}"
+    docker network rm monitoring-net 2>/dev/null || true
+    
     echo -e "${UI_MUTED}Removing monitoring files...${NC}"
-    sudo rm -rf "$HOME/monitoring"
+    # Use sudo for files that might be owned by the old monitoring user
+    if ! rm -rf "$HOME/monitoring" 2>/dev/null; then
+        sudo rm -rf "$HOME/monitoring"
+    fi
     
-    echo -e "${UI_MUTED}Removing monitoring system user...${NC}"
-    sudo userdel monitoring 2>/dev/null || true
+    # No system user cleanup needed - using current user
     
-    echo -e "${GREEN}✅ Monitoring plugin removed successfully${NC}"
+    echo -e "${GREEN}✅ Monitoring stack removed successfully${NC}"
+    
+    # Refresh dashboard cache to remove monitoring from display
+    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
     
     press_enter
 }
@@ -1111,6 +1319,7 @@ manage_monitoring_menu() {
             "See Grafana login information"
             "View logs"
             "Update monitoring"
+            "Remove monitoring"
             "Back to main menu"
         )
         
@@ -1118,10 +1327,11 @@ manage_monitoring_menu() {
         if selection=$(fancy_select_menu "Manage Monitoring" "${menu_options[@]}"); then
             case $selection in
                 0) manage_monitoring_state ;;
-                1) view_monitoring_logs ;;
-                2) view_grafana_credentials ;;
+                1) view_grafana_credentials ;;
+                2) view_monitoring_logs ;;
                 3) update_monitoring_services ;;
-                4) return ;;
+                4) remove_monitoring_stack ;;
+                5) return ;;
             esac
         else
             return
@@ -1290,7 +1500,8 @@ install_monitoring_plugin_with_dicks() {
     echo
     
     # Get list of available ethnode networks for preview
-    local available_networks=($(docker network ls --format "{{.Name}}" | grep "ethnode.*-net" | sort))
+    # Use proper discovery that checks for actual ethnodes, not just Docker networks
+    local available_networks=($(discover_nodeboi_networks | cut -d':' -f1))
     if [[ ${#available_networks[@]} -gt 0 ]]; then
         echo -e "${BOLD}Networks that will be connected:${NC}"
         for network in "${available_networks[@]}"; do
@@ -1299,7 +1510,7 @@ install_monitoring_plugin_with_dicks() {
         done
         echo
     else
-        echo -e "${YELLOW}⚠️  No ethnode networks found. Monitoring will be installed in isolated mode.${NC}"
+        echo -e "${YELLOW}⚠️  No active ethnodes found. Monitoring will be installed in isolated mode.${NC}"
         echo
     fi
     
@@ -1309,21 +1520,10 @@ install_monitoring_plugin_with_dicks() {
     # Install monitoring stack with all networks pre-selected
     if install_monitoring_stack "${available_networks[@]}"; then
         echo -e "${GREEN}✅ Monitoring plugin installed successfully!${NC}"
-        echo
-        echo -e "${BOLD}Access URLs:${NC}"
         
-        # Get the actual machine IP since we use 0.0.0.0 for plugin installation
-        local actual_ip=$(hostname -I | awk '{print $1}' || echo "localhost")
-        echo -e "  • Grafana:    ${CYAN}http://${actual_ip}:3000${NC} (admin / check .env for password)"
-        echo -e "  • Prometheus: ${CYAN}http://${actual_ip}:9090${NC}"
-        echo
-        echo -e "${BOLD}Management:${NC}"
-        echo -e "  • Use 'Manage monitoring networks (DICKS)' to adjust connections${NC}"
-        echo
-        echo -e "${BOLD}Import dashboards from Grafana web UI:${NC}"
-        echo -e "  • Node Exporter Full: ID ${YELLOW}1860${NC}"
-        echo -e "  • Reth: ID ${YELLOW}22941${NC}"
-        echo -e "  • Besu: ID ${YELLOW}10273${NC}"
+        # Ensure dashboard cache is refreshed to show new monitoring
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
+        
         echo
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r

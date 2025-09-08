@@ -508,7 +508,7 @@ check_plugin_health() {
 }
 
 # Plugin management menu
-manage_plugins_menu() {
+manage_plugins_menu_OLD() {
     while true; do
         clear
         print_header
