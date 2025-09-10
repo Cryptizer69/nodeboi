@@ -43,6 +43,17 @@ fancy_select_menu() {
         
         # Show fresh dashboard for all menus - read from cache file each time
         local current_dashboard=""
+        local refresh_indicator=""
+        local lock_file="${DASHBOARD_CACHE_LOCK:-$HOME/.nodeboi/cache/dashboard.lock}"
+        
+        # Check if background refresh is running
+        if [[ -f "$lock_file" ]]; then
+            local lock_pid=$(cat "$lock_file" 2>/dev/null)
+            if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+                refresh_indicator="${UI_MUTED}◐ Refreshing...${UI_RESET}"
+            fi
+        fi
+        
         if [[ -f "$dashboard_cache_file" ]]; then
             current_dashboard=$(cat "$dashboard_cache_file" 2>/dev/null)
         else
@@ -54,7 +65,27 @@ fancy_select_menu() {
         fi
         
         if [[ -n "$current_dashboard" ]]; then
-            echo -e "$current_dashboard" >&2
+            # If refreshing, show indicator right after the dashboard title
+            if [[ -n "$refresh_indicator" ]]; then
+                # Split dashboard content to insert refresh indicator after title
+                local dashboard_lines
+                readarray -t dashboard_lines <<< "$current_dashboard"
+                
+                # Show first two lines (title and separator)
+                for i in 0 1; do
+                    [[ ${dashboard_lines[i]+set} ]] && echo -e "${dashboard_lines[i]}" >&2
+                done
+                
+                # Show refresh indicator
+                echo -e "$refresh_indicator" >&2
+                
+                # Show the rest of the dashboard
+                for (( i=2; i<${#dashboard_lines[@]}; i++ )); do
+                    echo -e "${dashboard_lines[i]}" >&2
+                done
+            else
+                echo -e "$current_dashboard" >&2
+            fi
             echo >&2  # Add blank line after dashboard
         fi
         
@@ -76,8 +107,23 @@ fancy_select_menu() {
         
         echo -e "\n${UI_DIM}Use ↑/↓ arrows or j/k, Enter to select, 'q' to quit${UI_RESET}" >&2
         
-        # Read key
-        IFS= read -rsn1 key
+        # Read key with timeout to allow auto-refresh when background processes complete
+        local was_refreshing="$refresh_indicator"
+        if ! IFS= read -rsn1 -t 2 key; then
+            # Timeout occurred - check if refresh status changed and redraw if needed
+            local lock_file="${DASHBOARD_CACHE_LOCK:-$HOME/.nodeboi/cache/dashboard.lock}"
+            local current_refresh=""
+            if [[ -f "$lock_file" ]]; then
+                local lock_pid=$(cat "$lock_file" 2>/dev/null)
+                if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+                    current_refresh="${UI_MUTED}◐ Refreshing...${UI_RESET}"
+                fi
+            fi
+            # If refresh status changed, continue loop to redraw
+            [[ "$was_refreshing" != "$current_refresh" ]] && continue
+            # If no change, continue loop anyway to keep checking
+            continue
+        fi
         
         case "$key" in
             $'\033')
@@ -142,15 +188,21 @@ fancy_text_input() {
     local prompt_text="$2"
     local default_value="$3"
     local validation_func="$4"  # Optional validation function
+    local is_password="${5:-}"   # Optional: true for password input (masked)
     
     # Cache dashboard content for all text input  
     local cached_dashboard=""
     # Show dashboard for ALL text inputs to maintain consistency
+    local dashboard_cache_file="$HOME/.nodeboi/cache/dashboard.cache"
+    
     if declare -f print_dashboard >/dev/null 2>&1; then
-        # Source required libraries to ensure dashboard functions work
+        # If we have access to print_dashboard, use it directly
         [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
         [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
         cached_dashboard=$(print_dashboard 2>/dev/null)
+    elif [[ -f "$dashboard_cache_file" ]]; then
+        # Fallback: use the cached dashboard file (for scripts called from nodeboi)
+        cached_dashboard=$(cat "$dashboard_cache_file" 2>/dev/null)
     fi
     
     while true; do
@@ -177,7 +229,12 @@ fancy_text_input() {
         echo >&2
         
         # Show input prompt with pre-filled default value that can be edited
-        if [[ -n "$default_value" ]]; then
+        if [[ "$is_password" == "true" ]]; then
+            # Password input - always masked, no default value support
+            printf "${UI_PRIMARY}▶${UI_RESET} " >&2
+            read -r -s input_value  # -s flag masks the input
+            echo >&2  # New line after masked input
+        elif [[ -n "$default_value" ]]; then
             # Always try readline pre-fill first - this puts default text in the input buffer
             printf "${UI_PRIMARY}▶${UI_RESET} " >&2
             

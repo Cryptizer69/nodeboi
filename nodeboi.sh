@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="v0.3.3"
+SCRIPT_VERSION="v0.4.0"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -11,6 +11,22 @@ NODEBOI_LIB="${NODEBOI_HOME}/lib"
 for lib in "${NODEBOI_LIB}"/*.sh; do
     [[ -f "$lib" && "$(basename "$lib")" != "plugins.sh" ]] && source "$lib"
 done  
+
+# Check if Web3signer is properly installed (not just partial/aborted installation)
+is_web3signer_properly_installed() {
+    local web3signer_dir="$HOME/web3signer"
+    
+    # Check if directory exists
+    [[ ! -d "$web3signer_dir" ]] && return 1
+    
+    # Check for essential files that indicate complete installation
+    [[ ! -f "$web3signer_dir/compose.yml" ]] && return 1
+    [[ ! -f "$web3signer_dir/.env" ]] && return 1
+    [[ ! -f "$web3signer_dir/import-keys.sh" ]] && return 1
+    [[ ! -d "$web3signer_dir/web3signer_config" ]] && return 1
+    
+    return 0
+}
 
 # Colors
 RED='\033[0;31m'
@@ -47,27 +63,308 @@ press_enter() {
 # Install service submenu
 install_service_menu() {
     while true; do
-        local install_options=(
-            "Install ethnode"
-            "Install monitoring stack" 
-            "Back to main menu"
-        )
+        local install_options=("Install new ethnode")
+        
+        # Add validator submenu based on proper Web3signer installation
+        if is_web3signer_properly_installed; then
+            install_options+=("Install validator")
+        else
+            install_options+=("Install Web3signer")
+        fi
+        
+        install_options+=("Install monitoring" "Back to main menu")
         
         local selection
         if selection=$(fancy_select_menu "Install New Service" "${install_options[@]}"); then
-            case $selection in
-                0) install_node ;;
-                1) 
-                    # Load monitoring library and install
-                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
-                    install_monitoring_plugin_with_dicks
+            local selected_option="${install_options[$selection]}"
+            
+            case "$selected_option" in
+                "Install new ethnode")
+                    install_node
                     ;;
-                2) return ;;
+                "Install Web3signer")
+                    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+                    install_web3signer
+                    ;;
+                "Install validator")
+                    install_validator_submenu
+                    ;;
+                "Install monitoring")
+                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
+                    install_monitoring_services_with_dicks
+                    ;;
+                "Back to main menu")
+                    return
+                    ;;
             esac
         else
             return
         fi
     done
+}
+
+# Install validator submenu
+install_validator_submenu() {
+    while true; do
+        local validator_options=()
+        
+        # Add Vero if not already installed
+        if [[ ! -d "$HOME/vero" ]]; then
+            validator_options+=("Install Vero")
+        fi
+        
+        # Add Teku (placeholder for future implementation)
+        validator_options+=("Install Teku (coming soon)")
+        validator_options+=("Back to install menu")
+        
+        local selection
+        if selection=$(fancy_select_menu "Install Validator Client" "${validator_options[@]}"); then
+            local selected_option="${validator_options[$selection]}"
+            
+            case "$selected_option" in
+                "Install Vero")
+                    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+                    install_vero
+                    ;;
+                "Install Teku (coming soon)")
+                    echo -e "${YELLOW}Teku validator client support is coming soon!${NC}"
+                    press_enter
+                    ;;
+                "Back to install menu")
+                    return
+                    ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
+# Manage Web3signer submenu
+manage_web3signer_menu() {
+    while true; do
+        local web3signer_options=(
+            "Start Web3signer"
+            "Stop Web3signer"
+            "Restart Web3signer"
+            "View logs"
+            "Add keys"
+            "Remove keys"
+            "Update Web3signer"
+            "Remove Web3signer"
+            "Back to manage menu"
+        )
+        
+        local selection
+        if selection=$(fancy_select_menu "Manage Web3signer" "${web3signer_options[@]}"); then
+            local selected_option="${web3signer_options[$selection]}"
+            
+            case "$selected_option" in
+                "Start Web3signer")
+                    echo -e "${UI_MUTED}Starting Web3signer...${NC}"
+                    cd ~/web3signer && docker compose up -d
+                    echo -e "${GREEN}✓ Web3signer started${NC}"
+                    press_enter
+                    ;;
+                "Stop Web3signer")
+                    echo -e "${UI_MUTED}Stopping Web3signer...${NC}"
+                    cd ~/web3signer && docker compose stop web3signer
+                    echo -e "${GREEN}✓ Web3signer stopped${NC}"
+                    press_enter
+                    ;;
+                "Restart Web3signer")
+                    echo -e "${UI_MUTED}Restarting Web3signer...${NC}"
+                    cd ~/web3signer && docker compose restart web3signer
+                    echo -e "${GREEN}✓ Web3signer restarted${NC}"
+                    press_enter
+                    ;;
+                "View logs")
+                    echo -e "${UI_MUTED}Showing Web3signer logs (Ctrl+C to exit)...${NC}"
+                    cd ~/web3signer && docker compose logs -f web3signer
+                    ;;
+                "Add keys")
+                    echo -e "${CYAN}Add Validator Keys${NC}"
+                    echo "=================="
+                    echo
+                    echo "This will run the key import script."
+                    echo "Make sure your validator keys are accessible (e.g., on USB drive)"
+                    echo
+                    if fancy_confirm "Continue with key import?" "n"; then
+                        # Check if keystore password is set
+                        local keystore_password=$(grep "KEYSTORE_PASSWORD=" ~/web3signer/.env | cut -d'=' -f2)
+                        if [[ -z "$keystore_password" ]]; then
+                            echo
+                            echo "Before importing keys, you need to set your keystore password."
+                            echo "This password will decrypt your validator keystore files."
+                            echo
+                            
+                            keystore_password=$(fancy_text_input "Keystore Password" \
+                                "Enter your keystore password:" \
+                                "" \
+                                "" \
+                                true)  # true for password input (masked)
+                            
+                            if [[ -z "$keystore_password" ]]; then
+                                echo "Password cannot be empty. Key import cancelled."
+                            else
+                                # Update .env file with the password
+                                sed -i "s|KEYSTORE_PASSWORD=.*|KEYSTORE_PASSWORD=${keystore_password}|g" ~/web3signer/.env
+                                echo "✓ Keystore password configured"
+                                echo
+                                
+                                # Now call the key import script
+                                cd ~/web3signer && ./import-keys.sh
+                            fi
+                        else
+                            # Password already set, proceed with import
+                            cd ~/web3signer && ./import-keys.sh
+                        fi
+                    fi
+                    press_enter
+                    ;;
+                "Remove keys")
+                    echo -e "${CYAN}Remove Validator Keys${NC}"
+                    echo "====================="
+                    echo
+                    echo "This will list and allow you to remove validator keys from Web3signer."
+                    echo -e "${YELLOW}⚠️  WARNING: Removed keys cannot be used for validation${NC}"
+                    echo
+                    if fancy_confirm "Continue with key removal?" "n"; then
+                        # Call the remove keys script
+                        if [[ -f ~/web3signer/remove-keys.sh ]]; then
+                            cd ~/web3signer && ./remove-keys.sh
+                        else
+                            echo -e "${RED}Remove keys script not found${NC}"
+                            echo "This feature may not be fully implemented yet."
+                        fi
+                    fi
+                    press_enter
+                    ;;
+                "Update Web3signer")
+                    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+                    update_web3signer
+                    ;;
+                "Remove Web3signer")
+                    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+                    remove_web3signer
+                    # Return to main menu after removal since Web3signer management no longer makes sense
+                    return
+                    ;;
+                "Back to manage menu")
+                    return
+                    ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
+# Manage Vero submenu
+manage_vero_menu() {
+    while true; do
+        local vero_options=(
+            "Start Vero"
+            "Stop Vero"
+            "Restart Vero"
+            "View logs"
+            "Manage beacon endpoints"
+            "Update fee recipient"
+            "Remove Vero"
+            "Back to manage menu"
+        )
+        
+        local selection
+        if selection=$(fancy_select_menu "Manage Vero" "${vero_options[@]}"); then
+            local selected_option="${vero_options[$selection]}"
+            
+            case "$selected_option" in
+                "Start Vero")
+                    echo -e "${UI_MUTED}Starting Vero...${NC}"
+                    cd ~/vero && docker compose up -d
+                    echo -e "${GREEN}✓ Vero started${NC}"
+                    press_enter
+                    ;;
+                "Stop Vero")
+                    echo -e "${UI_MUTED}Stopping Vero...${NC}"
+                    cd ~/vero && docker compose stop vero
+                    echo -e "${GREEN}✓ Vero stopped${NC}"
+                    press_enter
+                    ;;
+                "Restart Vero")
+                    echo -e "${UI_MUTED}Restarting Vero...${NC}"
+                    cd ~/vero && docker compose restart vero
+                    echo -e "${GREEN}✓ Vero restarted${NC}"
+                    press_enter
+                    ;;
+                "View logs")
+                    echo -e "${UI_MUTED}Showing Vero logs (Ctrl+C to exit)...${NC}"
+                    cd ~/vero && docker compose logs -f vero
+                    ;;
+                "Manage beacon endpoints")
+                    echo -e "${YELLOW}Beacon endpoint management coming soon!${NC}"
+                    echo -e "${UI_MUTED}For now, edit ~/vero/.env manually and restart Vero${NC}"
+                    press_enter
+                    ;;
+                "Update fee recipient")
+                    update_vero_fee_recipient
+                    ;;
+                "Remove Vero")
+                    remove_vero
+                    # Return to main menu after removal since Vero management no longer makes sense
+                    return
+                    ;;
+                "Back to manage menu")
+                    return
+                    ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
+# Update Vero fee recipient
+update_vero_fee_recipient() {
+    echo -e "${CYAN}Update Fee Recipient${NC}"
+    echo "===================="
+    echo
+    
+    # Get current fee recipient
+    local current_recipient=$(grep "FEE_RECIPIENT=" ~/vero/.env | cut -d'=' -f2)
+    echo -e "${UI_MUTED}Current fee recipient: ${current_recipient}${NC}"
+    echo
+    
+    # Get new fee recipient
+    local new_recipient
+    new_recipient=$(fancy_text_input "Update Fee Recipient" \
+        "Enter new fee recipient address:" \
+        "$current_recipient" \
+        "")
+    
+    # Validate format
+    if [[ ! "$new_recipient" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        echo -e "${RED}Invalid fee recipient address format${NC}"
+        press_enter
+        return 1
+    fi
+    
+    # Update .env file
+    sed -i "s/FEE_RECIPIENT=.*/FEE_RECIPIENT=${new_recipient}/" ~/vero/.env
+    
+    echo -e "${GREEN}✓ Fee recipient updated${NC}"
+    echo -e "${YELLOW}⚠️  Restart Vero to apply changes${NC}"
+    echo
+    
+    if fancy_confirm "Restart Vero now?" "y"; then
+        cd ~/vero && docker compose restart vero
+        echo -e "${GREEN}✓ Vero restarted with new fee recipient${NC}"
+        
+        # Refresh dashboard cache to show updated status  
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+    fi
+    
+    press_enter
 }
 
 # Manage service submenu
@@ -78,6 +375,8 @@ manage_service_menu() {
         # Check what services are installed and add appropriate options
         local has_ethnodes=false
         local has_monitoring=false
+        local has_web3signer=false
+        local has_vero=false
         
         # Check for ethnodes
         for dir in "$HOME"/ethnode*; do
@@ -92,9 +391,26 @@ manage_service_menu() {
             has_monitoring=true
         fi
         
+        # Check for validator services
+        if [[ -d "$HOME/web3signer" && -f "$HOME/web3signer/.env" ]]; then
+            has_web3signer=true
+        fi
+        
+        if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+            has_vero=true
+        fi
+        
         # Build menu based on what's installed
         if [[ "$has_ethnodes" == true ]]; then
             manage_options+=("Manage ethnodes")
+        fi
+        
+        if [[ "$has_web3signer" == true ]]; then
+            manage_options+=("Manage Web3signer")
+        fi
+        
+        if [[ "$has_vero" == true ]]; then
+            manage_options+=("Manage Vero")
         fi
         
         if [[ "$has_monitoring" == true ]]; then
@@ -104,7 +420,7 @@ manage_service_menu() {
         manage_options+=("Back to main menu")
         
         # If nothing is installed, show helpful message
-        if [[ "$has_ethnodes" == false && "$has_monitoring" == false ]]; then
+        if [[ "$has_ethnodes" == false && "$has_monitoring" == false && "$has_web3signer" == false && "$has_vero" == false ]]; then
             clear
             print_header
             echo -e "${YELLOW}No services installed yet${NC}"
@@ -119,6 +435,8 @@ manage_service_menu() {
             local option="${manage_options[$selection]}"
             case "$option" in
                 "Manage ethnodes") manage_nodes_menu ;;
+                "Manage Web3signer") manage_web3signer_menu ;;
+                "Manage Vero") manage_vero_menu ;;
                 "Manage monitoring")
                     [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
                     manage_monitoring_menu
@@ -224,63 +542,27 @@ remove_nodeboi() {
     clear
     print_header
     
-    echo -e "\n${RED}${BOLD}⚠️  WARNING: Complete Nodeboi Removal${NC}"
-    echo "========================================="
+    echo -e "\n${YELLOW}${BOLD}⚠️  WARNING: Uninstalling Nodeboi${NC}"
+    echo "=================================="
+    echo
+    echo -e "${GREEN}${BOLD}IMPORTANT:${NC} Nodeboi is just a management wrapper."
+    echo -e "Your running services will ${GREEN}${BOLD}continue running normally${NC}."
+    echo -e "This only removes the ~/.nodeboi/ directory and management tools."
+    echo
+    echo -e "After uninstall, manage services directly with Docker Compose:"
+    echo -e "${UI_MUTED}  • docker compose -f ~/ethnode1/compose.yml up/down${NC}"
+    echo -e "${UI_MUTED}  • docker compose -f ~/monitoring/compose.yml up/down${NC}"
     echo
     
-    # Check for running services FIRST
-    echo -e "${UI_MUTED}Checking for running services...${NC}"
-    local running_services=()
-    local has_running=false
-    
-    # Check for running ethnode containers
-    for node_dir in "$HOME"/ethnode*; do
-        if [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
-            local node_name=$(basename "$node_dir")
-            if docker ps --filter "name=${node_name}-" --format "{{.Names}}" | grep -q "${node_name}-"; then
-                running_services+=("$node_name")
-                has_running=true
-            fi
-        fi
-    done
-    
-    # Check for running monitoring
-    if docker ps --filter "name=monitoring-" --format "{{.Names}}" | grep -q "monitoring-"; then
-        running_services+=("monitoring")
-        has_running=true
-    fi
-    
-    if [[ "$has_running" == true ]]; then
-        echo
-        echo -e "${RED}${BOLD}ERROR: Cannot remove nodeboi while services are running!${NC}"
-        echo "======================================================="
-        echo
-        echo -e "${YELLOW}The following services are currently running:${NC}"
-        for service in "${running_services[@]}"; do
-            echo -e "${UI_MUTED}  • $service${NC}"
-        done
-        echo
-        echo -e "${UI_MUTED}Please stop all services first using:${NC}"
-        echo -e "${UI_MUTED}  Main Menu → Manage services → Start/stop nodes${NC}"
-        echo -e "${UI_MUTED}  Main Menu → Manage services → Manage monitoring → Start/stop monitoring${NC}"
-        echo
+    # First require password confirmation
+    echo -e "${YELLOW}For security, please enter your user password:${NC}"
+    if ! sudo -v 2>/dev/null; then
+        echo -e "${RED}Password verification failed. Removal cancelled.${NC}"
         press_enter
         return
     fi
     
-    echo -e "${GREEN}✓ No running services detected${NC}"
     echo
-    echo -e "${YELLOW}This will permanently remove:${NC}"
-    echo -e "${UI_MUTED}  • All ethnodes and their data${NC}"
-    echo -e "${UI_MUTED}  • Monitoring stack and data${NC}" 
-    echo -e "${UI_MUTED}  • All Docker containers and volumes${NC}"
-    echo -e "${UI_MUTED}  • All Docker networks created by nodeboi${NC}"
-    echo -e "${UI_MUTED}  • The entire nodeboi installation (~/.nodeboi/)${NC}"
-    echo -e "${UI_MUTED}  • Any system users created by nodeboi${NC}"
-    echo
-    echo -e "${RED}${BOLD}THIS CANNOT BE UNDONE!${NC}"
-    echo
-    
     read -p "Are you absolutely sure you want to remove nodeboi? Type 'REMOVE' to confirm: " -r
     echo
     
@@ -290,38 +572,7 @@ remove_nodeboi() {
         return
     fi
     
-    echo -e "${UI_MUTED}Removing nodeboi components...${NC}"
-    echo
-    
-    # Remove ethnode directories (services are already stopped)
-    echo -e "${UI_MUTED}Cleaning up ethnode directories...${NC}"
-    for node_dir in "$HOME"/ethnode*; do
-        if [[ -d "$node_dir" ]]; then
-            local node_name=$(basename "$node_dir")
-            echo -e "${UI_MUTED}  Removing $node_name directory...${NC}"
-            rm -rf "$node_dir" 2>/dev/null || sudo rm -rf "$node_dir"
-            
-            # Remove system user if it exists (legacy cleanup)
-            if id "$node_name" &>/dev/null; then
-                sudo userdel -r "$node_name" 2>/dev/null || true
-            fi
-        fi
-    done
-    
-    # Remove monitoring directory (service is already stopped)
-    echo -e "${UI_MUTED}Cleaning up monitoring directory...${NC}"
-    if [[ -d "$HOME/monitoring" ]]; then
-        rm -rf "$HOME/monitoring" 2>/dev/null || sudo rm -rf "$HOME/monitoring"
-    fi
-    
-    # Remove monitoring system user if it exists (legacy cleanup)
-    if id "monitoring" &>/dev/null; then
-        sudo userdel monitoring 2>/dev/null || true
-    fi
-    
-    # Remove Docker networks created by nodeboi
-    echo -e "${UI_MUTED}Removing Docker networks...${NC}"
-    docker network ls --format "{{.Name}}" | grep -E "(ethnode|monitoring)" | xargs -r docker network rm 2>/dev/null || true
+    echo -e "${UI_MUTED}Uninstalling nodeboi management tools...${NC}"
     
     # Remove nodeboi directory
     echo -e "${UI_MUTED}Removing nodeboi installation...${NC}"
@@ -330,13 +581,15 @@ remove_nodeboi() {
     
     # Remove systemd service if it exists
     if [[ -f "/etc/systemd/system/nodeboi.service" ]]; then
+        echo -e "${UI_MUTED}Removing system service (requires admin permissions)...${NC}"
         sudo systemctl disable --now nodeboi 2>/dev/null || true
         sudo rm -f "/etc/systemd/system/nodeboi.service"
         sudo systemctl daemon-reload
     fi
     
     echo
-    echo -e "${GREEN}✅ Nodeboi has been completely removed from your system.${NC}"
+    echo -e "${GREEN}✅ Nodeboi management tools have been uninstalled.${NC}"
+    echo -e "${UI_MUTED}Your services continue running normally.${NC}"
     echo
     echo -e "${UI_MUTED}Thank you for using nodeboi!${NC}"
     echo

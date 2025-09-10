@@ -244,18 +244,25 @@ remove_node() {
     
     # Try to remove directory with multiple fallback methods
     if [[ -d "$node_dir" ]]; then
-        # Method 1: Try sudo (will fail silently if no sudo access)
-        if sudo rm -rf "$node_dir" 2>/dev/null; then
-            echo -e "${UI_MUTED}    Directory removed with sudo${NC}" >&2
+        # Method 1: Try regular removal first
+        if rm -rf "$node_dir" 2>/dev/null; then
+            echo -e "${UI_MUTED}    Directory removed${NC}" >&2
         else
-            echo -e "${UI_MUTED}    Sudo not available, trying Docker cleanup...${NC}" >&2
             # Method 2: Use Docker container to remove files as root
+            echo -e "${UI_MUTED}    Trying Docker cleanup for root-owned files...${NC}" >&2
             if docker run --rm -v "$node_dir":/remove alpine sh -c "rm -rf /remove/* && rm -rf /remove/.* 2>/dev/null || true" 2>/dev/null; then
                 # Remove the now-empty directory
                 rmdir "$node_dir" 2>/dev/null || rm -rf "$node_dir" 2>/dev/null || true
                 echo -e "${UI_MUTED}    Directory cleaned with Docker${NC}" >&2
             else
-                echo -e "${YELLOW}    Warning: Could not fully clean directory $node_dir${NC}" >&2
+                # Method 3: Ask for sudo permission upfront
+                echo -e "${YELLOW}    Some files require admin permissions to remove${NC}" >&2
+                echo -e "${UI_MUTED}    You may be prompted for your password...${NC}" >&2
+                if sudo rm -rf "$node_dir" 2>/dev/null; then
+                    echo -e "${UI_MUTED}    Directory removed with admin permissions${NC}" >&2
+                else
+                    echo -e "${YELLOW}    Warning: Could not fully clean directory $node_dir${NC}" >&2
+                fi
             fi
         fi
     fi
@@ -297,6 +304,14 @@ remove_nodes_menu() {
         if fancy_confirm "Remove $node_to_remove? This cannot be undone!" "n"; then
             echo -e "\n${UI_MUTED}Removing $node_to_remove...${NC}\n"
             remove_node "$node_to_remove"
+            
+            # Update network connections after removal (DICKS)
+            if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+                echo -e "${UI_MUTED}Updating service connections...${NC}"
+                source "${NODEBOI_LIB}/monitoring.sh" 
+                docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
+            fi
+            
             force_refresh_dashboard
             echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
         else
@@ -533,6 +548,202 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
     echo
 }
+
+# Web3signer health check
+check_web3signer_health() {
+    local service_dir="$1"
+    local service_name=$(basename "$service_dir")
+    
+    # Get configuration
+    local port=$(grep "WEB3SIGNER_PORT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local network=$(grep "ETH2_NETWORK=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local version=$(grep "WEB3SIGNER_VERSION=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local host_ip=$(grep "HOST_BIND_IP=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    
+    # Check container status
+    local containers_running=false
+    # Check if web3signer container is running (by name)
+    if docker ps --filter name=web3signer --filter status=running --format "{{.Names}}" | grep -q "^web3signer$"; then
+        containers_running=true
+    fi
+    
+    # Initialize status variables
+    local w3s_check="${RED}✗${NC}"
+    local access_indicator="[M]"
+    
+    # Determine access indicator
+    if [[ "$host_ip" == "0.0.0.0" ]]; then
+        access_indicator="${RED}[A]${NC}"
+    elif [[ "$host_ip" != "127.0.0.1" ]]; then
+        access_indicator="${YELLOW}[L]${NC}"
+    else
+        access_indicator="${GREEN}[M]${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        # Check Web3signer API health
+        local check_host="localhost"
+        if [[ "$host_ip" != "127.0.0.1" ]] && [[ -n "$host_ip" ]]; then
+            if [[ "$host_ip" == "0.0.0.0" ]]; then
+                check_host="localhost"
+            else
+                check_host="$host_ip"
+            fi
+        fi
+        
+        if curl -s "http://${check_host}:${port}/upcheck" >/dev/null 2>&1; then
+            w3s_check="${GREEN}✓${NC}"
+        fi
+    fi
+    
+    # Get keystore count
+    local keystore_count="?"
+    if [[ "$w3s_check" == "${GREEN}✓${NC}" ]]; then
+        local keystores_response=$(curl -s "http://${check_host}:${port}/eth/v1/keystores" 2>/dev/null)
+        if [[ -n "$keystores_response" ]] && command -v jq >/dev/null 2>&1; then
+            keystore_count=$(echo "$keystores_response" | jq '.data | length' 2>/dev/null || echo "?")
+        fi
+    fi
+    
+    # Check for updates if running
+    local w3s_update_indicator=""
+    if [[ "$containers_running" == true ]] && [[ -n "$version" ]]; then
+        w3s_update_indicator=$(check_service_update "web3signer" "$version")
+    fi
+    
+    # Display status
+    local status_indicator="${GREEN}●${NC}"
+    if [[ "$containers_running" == false ]]; then
+        status_indicator="${RED}●${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        echo -e "  $status_indicator web3signer ($network) ${access_indicator}"
+        printf "     %b %-20s (%s)%b\n" "$w3s_check" "web3signer" "$(display_version "web3signer" "$version")" "$w3s_update_indicator"
+        printf "     %s %-20s\n" "" "$keystore_count active keys"
+    else
+        echo -e "  ${status_indicator} web3signer (${network}) ${access_indicator}"
+        echo -e "     ${RED}● Stopped${NC}"
+    fi
+    echo
+}
+
+# Vero health check  
+check_vero_health() {
+    local service_dir="$1"
+    local service_name=$(basename "$service_dir")
+    
+    # Get configuration
+    local metrics_port=$(grep "VERO_METRICS_PORT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local network=$(grep "ETH2_NETWORK=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local version=$(grep "VERO_VERSION=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local beacon_urls=$(grep "BEACON_NODE_URLS=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2)
+    local w3s_url=$(grep "WEB3SIGNER_URL=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2)
+    local fee_recipient=$(grep "FEE_RECIPIENT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2)
+    local bind_ip=$(grep "HOST_BIND_IP=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    
+    # Check container status
+    local containers_running=false
+    if cd "$service_dir" 2>/dev/null; then
+        # Check if vero service is running
+        if docker compose ps --services --filter status=running 2>/dev/null | grep -q "vero"; then
+            containers_running=true
+        fi
+    fi
+    
+    # Initialize status variables
+    local vero_check="${RED}✗${NC}"
+    local access_indicator="[M]"
+    
+    # Determine access indicator
+    if [[ "$bind_ip" == "0.0.0.0" ]]; then
+        access_indicator="${RED}[A]${NC}"
+    elif [[ "$bind_ip" != "127.0.0.1" ]]; then
+        access_indicator="${YELLOW}[L]${NC}"
+    else
+        access_indicator="${GREEN}[M]${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        # Check Vero metrics endpoint
+        if curl -s "http://localhost:${metrics_port}/metrics" >/dev/null 2>&1; then
+            vero_check="${GREEN}✓${NC}"
+        fi
+    fi
+    
+    # Count beacon nodes (handle empty BEACON_NODE_URLS)
+    local beacon_count=0
+    if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
+        beacon_count=$(echo "$beacon_urls" | tr ',' '\n' | wc -l)
+    fi
+    
+    # Check for updates if running
+    local vero_update_indicator=""
+    if [[ "$containers_running" == true ]] && [[ -n "$version" ]]; then
+        vero_update_indicator=$(check_service_update "vero" "$version")
+    fi
+    
+    # Display status
+    local status_indicator="${GREEN}●${NC}"
+    if [[ "$containers_running" == false ]]; then
+        status_indicator="${RED}●${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        echo -e "  $status_indicator vero ($network) $access_indicator"
+        printf "     %b %-20s (%s)%b\n" "$vero_check" "vero" "$(display_version "vero" "$version")" "$vero_update_indicator"
+        printf "     %s %-20s\n" "" "Connected to:"
+        
+        # Handle case where no beacon nodes are configured
+        if [[ $beacon_count -eq 0 ]]; then
+            printf "     ${YELLOW}⚠️  No beacon nodes configured${NC}\n"
+            printf "     ${UI_MUTED}Install an ethnode first${NC}\n"
+        else
+            # Parse beacon URLs and check if they're reachable
+            local beacon_url_list=$(echo "$beacon_urls" | tr ',' ' ')
+            local reachable_count=0
+            for url in $beacon_url_list; do
+                # Extract the container name from the URL (e.g., ethnode1-grandine from http://ethnode1-grandine:5052)
+                local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:5052||g')
+                local display_name=$(echo "$container_name" | sed 's|-[a-z]*||g')  # ethnode1 from ethnode1-grandine
+                
+                # Map container names to localhost ports for dashboard health checks
+                local check_url=""
+                case "$container_name" in
+                    "ethnode1-grandine") check_url="http://127.0.0.1:5052" ;;
+                    "ethnode2-lodestar") check_url="http://127.0.0.1:5054" ;;
+                    "ethnode3-lighthouse") check_url="http://127.0.0.1:5056" ;;
+                    "ethnode4-teku") check_url="http://127.0.0.1:5058" ;;
+                    *) check_url="$url" ;;  # fallback to original URL
+                esac
+                
+                # Check if the beacon node is reachable
+                # Try both health and syncing endpoints as different clients support different endpoints
+                if curl -s --max-time 2 "${check_url}/eth/v1/node/health" >/dev/null 2>&1 || curl -s --max-time 2 "${check_url}/eth/v1/node/syncing" >/dev/null 2>&1; then
+                    printf "     ${GREEN}✓${NC} %s\n" "$display_name"
+                    ((reachable_count++))
+                else
+                    printf "     ${RED}✗${NC} %s ${WHITE}(waiting)${NC}\n" "$display_name"
+                fi
+            done
+            
+            # Show warning if no beacon nodes are reachable
+            if [[ $reachable_count -eq 0 ]]; then
+                printf "     ${YELLOW}⚠️  No beacon nodes reachable${NC}\n"
+            fi
+        fi
+    else
+        echo -e "  ${status_indicator} vero (${network}) $access_indicator"
+        echo -e "     ${RED}● Stopped${NC}"
+        
+        # Show warning even when stopped if no beacon nodes configured
+        if [[ $beacon_count -eq 0 ]]; then
+            printf "     ${YELLOW}⚠️  No beacon nodes configured${NC}\n"
+        fi
+    fi
+    echo
+}
+
 # Stub functions for missing dependencies to prevent delays
 cleanup_version_cache() { return 0; }
 check_service_update() { echo ""; }
@@ -566,7 +777,24 @@ generate_dashboard() {
         fi
     done
     
-    # Check for monitoring stack and display it
+    # Check for validator services and display them
+    local validator_found=false
+    
+    # Web3signer (singleton)
+    if [[ -d "$HOME/web3signer" && -f "$HOME/web3signer/.env" ]]; then
+        check_web3signer_health "$HOME/web3signer"
+        validator_found=true
+        found=true
+    fi
+    
+    # Vero (singleton)
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+        check_vero_health "$HOME/vero"
+        validator_found=true
+        found=true
+    fi
+    
+    # Check for monitoring and display it LAST
     if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" && -f "$HOME/monitoring/compose.yml" ]]; then
         # Monitoring functions are pre-loaded, just call them
         if command -v check_monitoring_health &> /dev/null; then
@@ -575,7 +803,7 @@ generate_dashboard() {
         found=true
     fi
     if [[ "$found" == false ]]; then
-        echo -e "${UI_MUTED}  No nodes installed${NC}\n"
+        echo -e "${UI_MUTED}  No nodes or services installed${NC}\n"
     else
         echo -e "${UI_MUTED}─────────────────────────────${NC}"
         echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC} ${UI_MUTED}Update${NC}"
@@ -587,7 +815,8 @@ generate_dashboard() {
 
 # Dashboard caching system
 DASHBOARD_CACHE_FILE="$HOME/.nodeboi/cache/dashboard.cache"
-DASHBOARD_CACHE_DURATION=300  # 5 minutes
+export DASHBOARD_CACHE_LOCK="$HOME/.nodeboi/cache/dashboard.lock"
+DASHBOARD_CACHE_DURATION=60   # 1 minute
 
 # Check if dashboard cache is valid
 is_dashboard_cache_valid() {
@@ -599,46 +828,82 @@ is_dashboard_cache_valid() {
     [[ -n "$cache_time" ]] && [[ $((current_time - cache_time)) -lt $DASHBOARD_CACHE_DURATION ]]
 }
 
-# Bulletproof dashboard cache generation
-refresh_dashboard_cache() {
+# Background dashboard generation (async)
+generate_dashboard_background() {
     local cache_file="$HOME/.nodeboi/cache/dashboard.cache"
-    mkdir -p "$(dirname "$cache_file")"
+    local lock_file="$DASHBOARD_CACHE_LOCK"
     
-    # Set working directory to nodeboi home to ensure relative paths work
-    local original_pwd="$PWD"
-    cd "$HOME/.nodeboi" 2>/dev/null || return 1
-    
-    # Ensure NODEBOI_LIB is set correctly
-    export NODEBOI_LIB="$HOME/.nodeboi/lib"
-    
-    # Load ALL required libraries explicitly
-    [[ -f "lib/clients.sh" ]] && source "lib/clients.sh" 2>/dev/null || true
-    [[ -f "lib/monitoring.sh" ]] && source "lib/monitoring.sh" 2>/dev/null || true
-    [[ -f "lib/port-manager.sh" ]] && source "lib/port-manager.sh" 2>/dev/null || true
-    
-    # Generate dashboard with error handling
-    if generate_dashboard > "$cache_file" 2>/dev/null; then
-        # Ensure cache file is not empty
-        if [[ ! -s "$cache_file" ]]; then
-            echo "NODEBOI Dashboard" > "$cache_file"
-            echo "=================" >> "$cache_file"
-            echo "" >> "$cache_file"
-            echo "  Dashboard generation failed" >> "$cache_file"
-            echo "" >> "$cache_file"
+    # Check for existing background job
+    if [[ -f "$lock_file" ]]; then
+        local lock_pid=$(cat "$lock_file" 2>/dev/null)
+        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+            return 0  # Background job already running
+        else
+            rm -f "$lock_file"  # Stale lock file
         fi
-    else
-        # Fallback if generation fails
-        cat > "$cache_file" << 'EOF'
+    fi
+    
+    # Start background generation
+    {
+        echo "$$" > "$lock_file"
+        
+        # Set working directory to nodeboi home to ensure relative paths work
+        cd "$HOME/.nodeboi" 2>/dev/null || return 1
+        
+        # Ensure NODEBOI_LIB is set correctly
+        export NODEBOI_LIB="$HOME/.nodeboi/lib"
+        
+        # Load ALL required libraries explicitly
+        [[ -f "lib/clients.sh" ]] && source "lib/clients.sh" 2>/dev/null || true
+        [[ -f "lib/monitoring.sh" ]] && source "lib/monitoring.sh" 2>/dev/null || true
+        [[ -f "lib/port-manager.sh" ]] && source "lib/port-manager.sh" 2>/dev/null || true
+        
+        # Generate dashboard with error handling
+        if generate_dashboard > "$cache_file.tmp" 2>/dev/null; then
+            # Ensure cache file is not empty
+            if [[ -s "$cache_file.tmp" ]]; then
+                mv "$cache_file.tmp" "$cache_file"
+            else
+                echo "NODEBOI Dashboard" > "$cache_file"
+                echo "=================" >> "$cache_file"
+                echo "" >> "$cache_file"
+                echo "  Dashboard generation failed" >> "$cache_file"
+                echo "" >> "$cache_file"
+                rm -f "$cache_file.tmp"
+            fi
+        else
+            # Fallback if generation fails
+            cat > "$cache_file" << 'EOF'
 NODEBOI Dashboard
 =================
 
   Dashboard temporarily unavailable
 
 EOF
+            rm -f "$cache_file.tmp"
+        fi
+        
+        # Clean up lock
+        rm -f "$lock_file"
+    } &
+    disown  # Detach from shell
+}
+
+# Async dashboard cache refresh
+refresh_dashboard_cache() {
+    local cache_file="$HOME/.nodeboi/cache/dashboard.cache"
+    mkdir -p "$(dirname "$cache_file")"
+    
+    # If cache exists and is valid, return immediately and update in background
+    if is_dashboard_cache_valid; then
+        return 0
     fi
     
-    # Restore original directory
-    cd "$original_pwd" 2>/dev/null || true
+    # If cache is stale or missing, start background refresh
+    generate_dashboard_background
+    
+    # Return immediately (don't wait for generation)
+    return 0
 }
 
 # Print dashboard (ALWAYS uses cache, never regenerates)
@@ -658,7 +923,13 @@ print_dashboard() {
 
 # Force refresh dashboard cache (call this after service state changes)
 force_refresh_dashboard() {
-    refresh_dashboard_cache
+    local cache_file="$HOME/.nodeboi/cache/dashboard.cache"
+    
+    # Invalidate current cache by removing it to ensure fresh generation
+    rm -f "$cache_file"
+    
+    # Start background refresh
+    generate_dashboard_background
 }
 
 
@@ -779,7 +1050,7 @@ manage_node_state() {
                     force_refresh_dashboard
                 fi
             done
-            print_box "All stopped nodes started" "success"
+            echo -e "${GREEN}All stopped nodes started${NC}"
             
         elif [[ $selection -eq $((total_nodes + 1)) ]]; then
             # Stop all running
@@ -790,7 +1061,7 @@ manage_node_state() {
                     force_refresh_dashboard
                 fi
             done
-            print_box "All running nodes stopped" "success"
+            echo -e "${GREEN}All running nodes stopped${NC}"
             
         elif [[ $selection -eq $((total_nodes + 2)) ]]; then
             # Cancel
@@ -816,13 +1087,13 @@ manage_node_state() {
                         echo -e "\n${YELLOW}Starting $node_name...${NC}"
                         cd "$node_dir" && docker compose up -d > /dev/null 2>&1
                         force_refresh_dashboard
-                        print_box "$node_name started" "success"
+                        echo -e "${GREEN}$node_name started${NC}"
                         ;;
                     1)
                         echo -e "\n${UI_MUTED}Stopping $node_name...${NC}"
                         safe_docker_stop "$node_name"
                         force_refresh_dashboard
-                        print_box "$node_name stopped" "success"
+                        echo -e "${GREEN}$node_name stopped${NC}"
                         ;;
                     2)
                         clear

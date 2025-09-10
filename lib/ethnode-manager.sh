@@ -164,7 +164,7 @@ prompt_node_name() {
     return 0
 }
 prompt_network() {
-    local network_options=("Hoodi testnet" "Ethereum mainnet")
+    local network_options=("hoodi testnet" "Ethereum mainnet")
     
     local selection
     if selection=$(fancy_select_menu "Select Network" "${network_options[@]}"); then
@@ -802,7 +802,7 @@ install_node() {
 
     # Check for existing monitoring network and connect if it exists
     if docker network ls --format "{{.Name}}" | grep -q "^monitoring-net$"; then
-        echo -e "${UI_MUTED}Detected monitoring stack - connecting to monitoring network...${NC}"
+        echo -e "${UI_MUTED}Detected monitoring - connecting to monitoring network...${NC}"
         
         # Add monitoring network to compose.yml
         cat >> compose.yml << 'EOF'
@@ -992,8 +992,88 @@ EOF
     echo -e "${GREEN}[✓] Installation complete.${NC}"
     echo
     
+    # Check if Vero is installed and offer to connect the new beacon node
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+        echo -e "${BLUE}Vero Integration${NC}"
+        echo "================"
+        echo
+        echo "Vero validator is installed and can connect to this new beacon node."
+        echo "This will add $node_name to Vero's beacon node list for redundancy."
+        echo
+        if fancy_confirm "Connect $node_name to Vero validator?" "y"; then
+            # Source validator manager functions
+            [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+            
+            # Add the new beacon node to Vero's configuration
+            local current_beacon_urls=$(grep "BEACON_NODE_URLS=" "$HOME/vero/.env" | cut -d'=' -f2)
+            
+            # Detect beacon client for the new node
+            local beacon_client=""
+            local network_name="${node_name}-net"
+            if docker network inspect "$network_name" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-grandine"; then
+                beacon_client="grandine"
+            elif docker network inspect "$network_name" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lodestar"; then
+                beacon_client="lodestar"
+            elif docker network inspect "$network_name" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lighthouse"; then
+                beacon_client="lighthouse"
+            elif docker network inspect "$network_name" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-teku"; then
+                beacon_client="teku"
+            else
+                beacon_client="lodestar" # fallback
+            fi
+            
+            local new_beacon_url="http://${node_name}-${beacon_client}:5052"
+            local updated_beacon_urls="${current_beacon_urls},${new_beacon_url}"
+            
+            # Update Vero configuration
+            sed -i "s|BEACON_NODE_URLS=.*|BEACON_NODE_URLS=${updated_beacon_urls}|g" "$HOME/vero/.env"
+            
+            # Add network connection to Vero compose file if not already present
+            if ! grep -q "${node_name}-net:" "$HOME/vero/compose.yml"; then
+                # Add to networks section in compose file
+                sed -i "/web3signer-net: {}/a\\      ${node_name}-net: {}" "$HOME/vero/compose.yml"
+                # Add to external networks section  
+                sed -i "/name: web3signer-net/a\\  ${node_name}-net:\n    external: true\n    name: ${node_name}-net" "$HOME/vero/compose.yml"
+            fi
+            
+            echo -e "${GREEN}✓ Connected $node_name to Vero${NC}"
+            echo "Vero uses majority threshold - with 3+ beacon nodes, 2 must agree for attestation signing."
+            echo
+            echo "Restarting Vero to apply changes..."
+            cd "$HOME/vero" && docker compose restart vero
+            echo -e "${GREEN}✓ Vero restarted with new beacon node connection${NC}"
+            
+            # Refresh dashboard again to show Vero integration
+            [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+        fi
+        echo
+    fi
+    
+    # Update monitoring integration if installed (DICKS)
+    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+        echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
+        source "${NODEBOI_LIB}/monitoring.sh" 
+        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
+        sync_grafana_dashboards > /dev/null 2>&1
+        echo -e "${GREEN}✓ Monitoring integration updated${NC}"
+        echo
+        
+        # Final dashboard refresh to show monitoring updates
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+    fi
+    
     # Remove signal trap - installation completed successfully
     trap - SIGINT SIGTERM SIGQUIT
+    
+    # Sync monitoring integration if installed
+    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+        echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
+        source "${NODEBOI_LIB}/monitoring.sh" 
+        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
+        sync_grafana_dashboards > /dev/null 2>&1
+        echo -e "${GREEN}✓ Monitoring integration updated${NC}"
+        echo
+    fi
     
     press_enter
 }

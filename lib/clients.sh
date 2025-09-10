@@ -5,6 +5,7 @@
 # ============ CLIENT REGISTRY (ADD NEW CLIENTS HERE) ============
 EXECUTION_CLIENTS=("reth" "besu" "nethermind")
 CONSENSUS_CLIENTS=("teku" "lodestar" "grandine")
+VALIDATOR_CLIENTS=("web3signer" "vero")
 OTHER_CLIENTS=("mevboost")
 
 # Docker images for each client
@@ -17,6 +18,11 @@ declare -gA DOCKER_IMAGES=(
     ["teku"]="consensys/teku"
     ["lodestar"]="chainsafe/lodestar"
     ["grandine"]="sifrai/grandine"
+    # Validator
+    ["web3signer"]="consensys/web3signer"
+    ["vero"]="ghcr.io/serenita-org/vero"
+    ["postgres"]="postgres"
+    ["flyway"]="flyway/flyway"
     # Other
     ["mevboost"]="flashbots/mev-boost"
 )
@@ -31,6 +37,11 @@ declare -gA GITHUB_REPOS=(
     ["teku"]="Consensys/teku"
     ["lodestar"]="ChainSafe/lodestar"
     ["grandine"]="grandinetech/grandine"
+    # Validator
+    ["web3signer"]="Consensys/web3signer"
+    ["vero"]="serenita-org/vero"
+    ["postgres"]="postgres/postgres"
+    ["flyway"]="flyway/flyway"
     # Other
     ["mevboost"]="flashbots/mev-boost"
     # Monitoring services
@@ -48,6 +59,11 @@ declare -gA VERSION_PREFIX=(
     ["lodestar"]="v"
     ["grandine"]=""
     ["mevboost"]=""
+    # Validator services
+    ["web3signer"]=""
+    ["vero"]="v"
+    ["postgres"]=""
+    ["flyway"]=""
     # Monitoring services
     ["grafana"]=""
     ["prometheus"]="v"

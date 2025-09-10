@@ -61,6 +61,6 @@ This will toggle ethnode2 from disconnected `[ ]` to connected `[x]`.
 
 ## 🚫 Known Issue
 
-The "Manage monitoring stack" dynamic menu item was causing crashes and has been removed from the main NODEBOI menu. Monitoring features are now available through the "Plugins" menu.
+The "Manage monitoring" dynamic menu item was causing crashes and has been removed from the main NODEBOI menu. Monitoring features are now available through the "Services" menu.
 
 For network management, use the direct scripts above for the most reliable experience.

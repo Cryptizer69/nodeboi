@@ -1,5 +1,5 @@
 #!/bin/bash
-# lib/monitoring.sh - Monitoring stack management for NODEBOI
+# lib/monitoring.sh - Monitoring management for NODEBOI
 
 # Load dependencies
 [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh"
@@ -28,6 +28,25 @@ discover_nodeboi_networks() {
         fi
     done
     
+    # Find validator service networks (web3signer, etc.)
+    for service in "web3signer" "vero"; do
+        if [[ -d "$HOME/$service" && -f "$HOME/$service/.env" ]]; then
+            local network_name="${service}-net"
+            
+            # Check if network exists
+            if docker network ls --format "{{.Name}}" | grep -q "^${network_name}$"; then
+                # Get running containers in this network
+                local containers=$(docker ps --filter "network=${network_name}" --format "{{.Names}}" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+                
+                if [[ -n "$containers" ]]; then
+                    networks+=("${network_name}:${containers}")
+                else
+                    networks+=("${network_name}:no running containers")
+                fi
+            fi
+        fi
+    done
+    
     printf '%s\n' "${networks[@]}"
 }
 
@@ -37,9 +56,9 @@ remove_ethnode_from_monitoring() {
     local node_name="$1"
     local monitoring_dir="$HOME/monitoring"
     
-    # Check if monitoring stack exists
+    # Check if monitoring exists
     if [[ ! -d "$monitoring_dir" ]]; then
-        return 0  # No monitoring stack, nothing to do
+        return 0  # No monitoring, nothing to do
     fi
     
     echo -e "${UI_MUTED}  Removing $node_name from monitoring configuration...${NC}" >&2
@@ -296,10 +315,10 @@ generate_prometheus_targets() {
     echo "$prometheus_configs"
 }
 
-# Install monitoring stack
+# Install monitoring
 install_monitoring_stack() {
     local preselected_networks=("$@")  # Accept networks as parameters
-    echo -e "\n${CYAN}${BOLD}Install Monitoring Stack${NC}"
+    echo -e "\n${CYAN}${BOLD}Install Monitoring${NC}"
     echo "========================="
     echo
     echo -e "${UI_MUTED}This will install:${NC}"
@@ -311,23 +330,20 @@ install_monitoring_stack() {
     # Check if already installed
     if [[ -d "$HOME/monitoring" ]]; then
         if [[ ${#preselected_networks[@]} -gt 0 ]]; then
-            # Plugin installation - remove silently
+            # Services installation - remove silently
             echo -e "${UI_MUTED}Removing existing installation...${NC}"
             cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
-            sudo rm -rf "$HOME/monitoring"
-        else
-            # Manual installation - ask for confirmation
-            echo -e "${YELLOW}Monitoring stack already installed${NC}"
-            
-            if fancy_confirm "Remove existing installation?" "n"; then
-                cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
+            if ! rm -rf "$HOME/monitoring" 2>/dev/null; then
+                echo -e "${YELLOW}Some files require admin permissions to remove${NC}"
+                echo -e "${UI_MUTED}You may be prompted for your password...${NC}"
                 sudo rm -rf "$HOME/monitoring"
-                echo -e "${UI_MUTED}Existing monitoring removed${NC}"
-            else
-                echo -e "${UI_MUTED}Press Enter to continue...${NC}"
-                read -r
-                return
             fi
+        else
+            # Manual installation - show message and return
+            echo -e "${YELLOW}The monitoring stack is already installed${NC}"
+            echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+            read -r
+            return
         fi
     fi
     
@@ -357,7 +373,7 @@ install_monitoring_stack() {
     # Step 3: Network access configuration
     local bind_ip
     if [[ ${#preselected_networks[@]} -gt 0 ]]; then
-        # Plugin installation - use 0.0.0.0 automatically
+        # Services installation - use 0.0.0.0 automatically
         bind_ip="0.0.0.0"
         echo -e "${UI_MUTED}Setting network access to all networks (0.0.0.0)...${NC}"
     else
@@ -391,7 +407,7 @@ install_monitoring_stack() {
     local selected_networks=()
     
     if [[ ${#preselected_networks[@]} -gt 0 ]]; then
-        # Use pre-selected networks (from plugin installation)
+        # Use pre-selected networks (from services installation)
         echo -e "${UI_MUTED}Using pre-selected networks: ${preselected_networks[*]}${NC}"
         selected_networks=("${preselected_networks[@]}")
     else
@@ -404,7 +420,7 @@ install_monitoring_stack() {
             local network_name="${network_info%%:*}"
             local containers="${network_info#*:}"
         
-        # Only include ethnode networks, not other plugin networks
+        # Only include ethnode networks, not other service networks
         if [[ "$network_name" =~ ^ethnode.*-net$ ]]; then
             selected_networks+=("$network_name")
             if [[ "$containers" == "no running containers" ]]; then
@@ -434,7 +450,7 @@ install_monitoring_stack() {
     # Step 6: Create .env file
     cat > ~/monitoring/.env <<EOF
 #============================================================================
-# MONITORING STACK CONFIGURATION
+# MONITORING CONFIGURATION
 # Generated: $(date)
 #============================================================================
 COMPOSE_FILE=compose.yml
@@ -609,8 +625,8 @@ EOF
     chmod 755 ~/monitoring/grafana/provisioning/
     chmod 755 ~/monitoring/grafana/provisioning/datasources/
     
-    # Step 11: Launch monitoring stack
-    echo -e "${UI_MUTED}Starting monitoring stack...${NC}"
+    # Step 11: Launch monitoring
+    echo -e "${UI_MUTED}Starting monitoring...${NC}"
     cd ~/monitoring
     if docker compose up -d; then
         echo
@@ -618,7 +634,7 @@ EOF
         
         # Verify containers are running
         if docker compose ps --services --filter status=running | grep -q prometheus; then
-            echo -e "${GREEN}✓ Monitoring stack installed successfully!${NC}"
+            echo -e "${GREEN}✓ Monitoring installed successfully!${NC}"
             echo
             echo -e "${BOLD}Access Information:${NC}"
             echo -e "${UI_MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -643,11 +659,11 @@ EOF
             echo -e "${YELLOW}💡 Tip: You can view these credentials later in:${NC}"
             echo -e "${UI_MUTED}   Main Menu → Manage services → Manage monitoring → See Grafana login information${NC}"
         else
-            echo -e "${RED}Failed to start monitoring stack${NC}"
+            echo -e "${RED}Failed to start monitoring${NC}"
             docker compose logs --tail=20
         fi
     else
-        echo -e "${RED}Failed to launch monitoring stack${NC}"
+        echo -e "${RED}Failed to launch monitoring${NC}"
     fi
     
     press_enter
@@ -679,13 +695,10 @@ view_grafana_credentials() {
     else
         echo -e "  Grafana:    ${GREEN}http://${bind_ip}:${grafana_port}${NC}"
     fi
+    echo -e "              Username: ${GREEN}admin${NC}"
+    echo -e "              Password: ${GREEN}${grafana_password}${NC}"
     
-    echo
-    echo -e "${BOLD}Credentials:${NC}"
-    echo -e "  Username: ${GREEN}admin${NC}"
-    echo -e "  Password: ${GREEN}${grafana_password}${NC}"
-    
-    # Refresh dashboard to show monitoring stack
+    # Refresh dashboard to show monitoring
     [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
 
     echo
@@ -735,7 +748,7 @@ change_monitoring_access_level() {
     
     if [[ -n "$new_ip" && "$new_ip" != "$current_ip" ]]; then
         sed -i "s/^BIND_IP=.*/BIND_IP=${new_ip}/" "$HOME/monitoring/.env"
-        echo -e "${UI_MUTED}Restarting monitoring stack...${NC}"
+        echo -e "${UI_MUTED}Restarting monitoring...${NC}"
         cd "$HOME/monitoring"
         docker compose restart
         echo -e "${GREEN}✓ Access level changed to: $new_ip${NC}"
@@ -883,7 +896,7 @@ EOF
     press_enter
 }
 
-# Remove monitoring stack
+# Remove monitoring
 remove_monitoring_stack() {
     if [[ ! -d "$HOME/monitoring" ]]; then
         echo -e "${YELLOW}Monitoring stack not installed${NC}"
@@ -891,7 +904,7 @@ remove_monitoring_stack() {
         return
     fi
     
-    echo -e "\n${CYAN}${BOLD}Remove Monitoring Stack${NC}"
+    echo -e "\n${CYAN}${BOLD}Remove Monitoring${NC}"
     echo "======================="
     
     echo -e "${UI_MUTED}Stopping monitoring containers...${NC}"
@@ -903,12 +916,14 @@ remove_monitoring_stack() {
     echo -e "${UI_MUTED}Removing monitoring files...${NC}"
     # Use sudo for files that might be owned by the old monitoring user
     if ! rm -rf "$HOME/monitoring" 2>/dev/null; then
+        echo -e "${YELLOW}Some files require admin permissions to remove${NC}"
+        echo -e "${UI_MUTED}You may be prompted for your password...${NC}"
         sudo rm -rf "$HOME/monitoring"
     fi
     
     # No system user cleanup needed - using current user
     
-    echo -e "${GREEN}✅ Monitoring stack removed successfully${NC}"
+    echo -e "${GREEN}✅ Monitoring removed successfully${NC}"
     
     # Refresh dashboard cache to remove monitoring from display
     [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
@@ -976,20 +991,15 @@ manage_monitoring_networks() {
         echo -e "${UI_MUTED}Networks available for monitoring connection:${NC}"
         echo
         
-        # Find all available ethnode networks
+        # Get available networks using DICKS discovery
+        local discovered_networks=($(docker_intelligent_connecting_kontainer_system --discover-networks | grep -v "^monitoring$"))
         local available_networks=()
-        for dir in "$HOME"/ethnode*; do
-            if [[ -d "$dir" && -f "$dir/.env" ]]; then
-                local node_name=$(basename "$dir")
-                local network_name="${node_name}-net"
-                
-                # Check if network exists and has running containers
-                if docker network ls --format "{{.Name}}" | grep -q "^${network_name}$"; then
-                    local containers=$(docker ps --filter "network=${network_name}" --format "{{.Names}}" | wc -l)
-                    if [[ $containers -gt 0 ]]; then
-                        available_networks+=("${network_name}:${containers}")
-                    fi
-                fi
+        
+        # Format networks with container count for UI display
+        for network_name in "${discovered_networks[@]}"; do
+            local containers=$(docker ps --filter "network=${network_name}" --format "{{.Names}}" | wc -l)
+            if [[ $containers -gt 0 ]]; then
+                available_networks+=("${network_name}:${containers}")
             fi
         done
         
@@ -1110,7 +1120,7 @@ manage_monitoring_networks() {
                 ;;
                 
             [Ss])
-                # Save and apply network connections
+                # Save and apply network connections using DICKS
                 apply_network_connections
                 return
                 ;;
@@ -1127,7 +1137,7 @@ manage_monitoring_networks() {
     done
 }
 
-# Apply network connections - actually connect containers to selected networks
+# Apply network connections using DICKS backend
 apply_network_connections() {
     clear
     echo -e "${CYAN}${BOLD}💾 Applying Network Connections${NC}"
@@ -1148,151 +1158,10 @@ apply_network_connections() {
     fi
     
     echo
-    echo -e "${UI_MUTED}Step 1: Rebuilding compose.yml with selected networks...${NC}"
+    echo -e "${UI_MUTED}Using DICKS to apply network connections...${NC}"
     
-    cd "$HOME/monitoring"
-    
-    # Use the same template system as installation to rebuild compose.yml with proper service network connections
-    sudo tee ~/monitoring/compose.yml > /dev/null <<'EOF'
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
-    container_name: ${MONITORING_NAME}-prometheus
-    restart: unless-stopped
-    user: "65534:65534"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
-      - '--web.external-url=http://localhost:${PROMETHEUS_PORT}'
-    ports:
-      - "${BIND_IP}:${PROMETHEUS_PORT}:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    networks:
-      - monitoring
-EOF
-
-    # Add selected networks to prometheus service
-    for network in "${selected_networks[@]}"; do
-        echo "      - ${network}" | sudo tee -a ~/monitoring/compose.yml > /dev/null
-    done
-
-    # Continue with rest of compose.yml
-    sudo tee -a ~/monitoring/compose.yml > /dev/null <<'EOF'
-    depends_on:
-      - node-exporter
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-  grafana:
-    image: grafana/grafana:${GRAFANA_VERSION}
-    container_name: ${MONITORING_NAME}-grafana
-    restart: unless-stopped
-    user: "${NODE_UID}:${NODE_GID}"
-    ports:
-      - "${BIND_IP}:${GRAFANA_PORT}:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:${GRAFANA_PORT}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    networks:
-      - monitoring
-    depends_on:
-      - prometheus
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-  node-exporter:
-    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
-    container_name: ${MONITORING_NAME}-node-exporter
-    restart: unless-stopped
-    user: "root"
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
-    ports:
-      - "127.0.0.1:${NODE_EXPORTER_PORT}:9100"
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    networks:
-      - monitoring
-    cap_drop:
-      - ALL
-    cap_add:
-      - SYS_TIME
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-volumes:
-  prometheus_data:
-    name: ${MONITORING_NAME}_prometheus_data
-  grafana_data:
-    name: ${MONITORING_NAME}_grafana_data
-
-networks:
-  monitoring:
-    name: monitoring-net
-    driver: bridge
-EOF
-    
-    # Add selected external networks to compose.yml
-    for network in "${selected_networks[@]}"; do
-        sudo tee -a ~/monitoring/compose.yml > /dev/null <<EOF
-  ${network}:
-    external: true
-    name: ${network}
-EOF
-    done
-    
-    echo -e "${UI_MUTED}Step 2: Connecting containers to networks...${NC}"
-    
-    # Connect running monitoring containers to selected networks
-    local containers=("monitoring-prometheus" "monitoring-grafana" "monitoring-node-exporter")
-    
-    for container in "${containers[@]}"; do
-        if docker ps --format "{{.Names}}" | grep -q "^${container}$"; then
-            echo -e "${UI_MUTED}  → Connecting $container...${NC}"
-            
-            # Disconnect from old external networks (keep monitoring network)
-            for old_network in $(docker network ls --format "{{.Name}}" | grep "ethnode.*-net"); do
-                docker network disconnect "$old_network" "$container" 2>/dev/null || true
-            done
-            
-            # Connect to selected networks
-            for network in "${selected_networks[@]}"; do
-                if docker network ls --format "{{.Name}}" | grep -q "^${network}$"; then
-                    docker network connect "$network" "$container" 2>/dev/null || true
-                fi
-            done
-        fi
-    done
+    # Use DICKS to apply network connections with UI feedback
+    docker_intelligent_connecting_kontainer_system --apply --service=monitoring --networks="${selected_networks[*]}" --ui
     
     echo
     if [[ ${#selected_networks[@]} -eq 0 ]]; then
@@ -1441,14 +1310,14 @@ find_available_port() {
 }
 
 
-# Plugin installation menu
-manage_plugins_menu() {
+# Services installation menu
+manage_services_menu() {
     while true; do
         clear
         print_header
         
         
-        # Check if monitoring stack is installed
+        # Check if monitoring is installed
         local monitoring_installed=false
         if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" ]]; then
             monitoring_installed=true
@@ -1456,15 +1325,15 @@ manage_plugins_menu() {
         
         local menu_options=()
         if [[ "$monitoring_installed" == true ]]; then
-            menu_options+=("Uninstall monitoring plugin")
+            menu_options+=("Uninstall monitoring services")
         else
-            menu_options+=("Install monitoring plugin (with DICKS)")
+            menu_options+=("Install monitoring services (with DICKS)")
         fi
         
         menu_options+=("Back to main menu")
         
         local selection
-        if selection=$(fancy_select_menu "Available Plugins" "${menu_options[@]}"); then
+        if selection=$(fancy_select_menu "Available Services" "${menu_options[@]}"); then
             if [[ "$monitoring_installed" == true ]]; then
                 case $selection in
                     0) remove_monitoring_stack ;;
@@ -1472,7 +1341,7 @@ manage_plugins_menu() {
                 esac
             else
                 case $selection in
-                    0) install_monitoring_plugin_with_dicks ;;
+                    0) install_monitoring_services_with_dicks ;;
                     1) return ;;
                 esac
             fi
@@ -1481,8 +1350,8 @@ manage_plugins_menu() {
         fi
     done
 }
-# Install monitoring plugin with automatic DICKS network setup
-install_monitoring_plugin_with_dicks() {
+# Install monitoring services with automatic DICKS network setup
+install_monitoring_services_with_dicks() {
     clear
     print_header
     
@@ -1492,10 +1361,18 @@ install_monitoring_plugin_with_dicks() {
         echo
     fi
     
-    echo -e "${CYAN}${BOLD}🔌 Installing Monitoring Plugin with DICKS${NC}"
+    # Check if monitoring is already installed
+    if [[ -d "$HOME/monitoring" ]]; then
+        echo -e "${YELLOW}The monitoring stack is already installed${NC}"
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+
+    echo -e "${CYAN}${BOLD}🔌 Installing Monitoring Services with DICKS${NC}"
     echo -e "${CYAN}${BOLD}===========================================${NC}"
     echo
-    echo -e "${UI_MUTED}This will install the monitoring stack (Prometheus + Grafana) and"
+    echo -e "${UI_MUTED}This will install monitoring (Prometheus + Grafana) and"
     echo -e "automatically connect it to all available ethnode networks.${NC}"
     echo
     
@@ -1517,9 +1394,9 @@ install_monitoring_plugin_with_dicks() {
     echo -e "${UI_MUTED}Starting automatic installation...${NC}"
     echo
     
-    # Install monitoring stack with all networks pre-selected
+    # Install monitoring with all networks pre-selected
     if install_monitoring_stack "${available_networks[@]}"; then
-        echo -e "${GREEN}✅ Monitoring plugin installed successfully!${NC}"
+        echo -e "${GREEN}✅ Monitoring services installed successfully!${NC}"
         
         # Ensure dashboard cache is refreshed to show new monitoring
         [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
@@ -1528,7 +1405,7 @@ install_monitoring_plugin_with_dicks() {
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
     else
-        echo -e "${RED}❌ Failed to install monitoring plugin${NC}"
+        echo -e "${RED}❌ Failed to install monitoring services${NC}"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
     fi
@@ -1539,7 +1416,7 @@ update_monitoring_services() {
     if [[ ! -d "$HOME/monitoring" ]]; then
         clear
         print_header
-        print_box "Monitoring stack not installed" "warning"
+        print_box "Monitoring not installed" "warning"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
         return
@@ -1563,7 +1440,7 @@ update_monitoring_services() {
         fi
     fi
     
-    echo -e "${CYAN}${BOLD}Current Monitoring Stack${NC}"
+    echo -e "${CYAN}${BOLD}Current Monitoring${NC}"
     echo "========================"
     echo
     echo -e "  • Prometheus: ${YELLOW}${prometheus_version}${NC}"
@@ -1714,7 +1591,7 @@ manage_monitoring_state() {
     if [[ ! -d "$HOME/monitoring" ]]; then
         clear
         print_header
-        print_box "Monitoring stack not installed" "warning"
+        print_box "Monitoring not installed" "warning"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
         return
@@ -1789,7 +1666,7 @@ view_monitoring_logs() {
     if [[ ! -d "$HOME/monitoring" ]]; then
         clear
         print_header
-        print_box "Monitoring stack not installed" "warning"
+        print_box "Monitoring not installed" "warning"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
         return
@@ -1856,4 +1733,558 @@ view_monitoring_logs() {
             docker compose logs -f
         fi
     fi
+}
+
+#============================================================================
+# Dynamic Grafana Dashboard Management
+#============================================================================
+
+# Dashboard mapping - service to Grafana.com dashboard ID or template file
+declare -gA GRAFANA_DASHBOARDS=(
+    # Always loaded
+    ["node-exporter"]="template:system/node-exporter-full.json"
+    
+    # Execution clients
+    ["besu"]="10273"
+    ["reth"]="template:execution/reth-overview.json"
+    ["nethermind"]="template:execution/nethermind-overview.json"
+    
+    # Consensus clients  
+    ["grandine"]="template:consensus/grandine-overview.json"
+    ["lodestar"]="template:consensus/lodestar-summary.json"
+    ["teku"]="template:consensus/teku-overview.json"
+    ["lighthouse"]="template:consensus/lighthouse-overview.json"
+    
+    # Validators - use templates
+    ["vero"]="template:validators/vero-detailed.json"
+    ["web3signer"]="custom"
+    
+    # Monitoring
+    ["prometheus"]="3662"
+)
+
+# Get currently installed services
+get_installed_services() {
+    local services=()
+    
+    # Always include node-exporter if monitoring is installed
+    if [[ -d "$HOME/monitoring" ]]; then
+        services+=("node-exporter")
+    fi
+    
+    # Scan ethnode directories
+    for ethnode_dir in "$HOME"/ethnode*; do
+        if [[ -d "$ethnode_dir" && -f "$ethnode_dir/.env" ]]; then
+            local compose_files=$(grep "COMPOSE_FILE=" "$ethnode_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            
+            # Parse compose files to determine clients
+            if [[ -n "$compose_files" ]]; then
+                # Check for execution clients
+                if echo "$compose_files" | grep -q "besu.yml"; then
+                    services+=("besu")
+                elif echo "$compose_files" | grep -q "reth.yml"; then
+                    services+=("reth")
+                elif echo "$compose_files" | grep -q "nethermind.yml"; then
+                    services+=("nethermind")
+                fi
+                
+                # Check for consensus clients
+                if echo "$compose_files" | grep -q "grandine"; then
+                    services+=("grandine")
+                elif echo "$compose_files" | grep -q "lodestar"; then
+                    services+=("lodestar")
+                elif echo "$compose_files" | grep -q "teku"; then
+                    services+=("teku")
+                elif echo "$compose_files" | grep -q "lighthouse"; then
+                    services+=("lighthouse")
+                fi
+            fi
+        fi
+    done
+    
+    # Check validator services
+    [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]] && services+=("vero")
+    [[ -d "$HOME/web3signer" && -f "$HOME/web3signer/.env" ]] && services+=("web3signer")
+    
+    printf "%s\n" "${services[@]}" | sort -u
+}
+
+# Download dashboard JSON from Grafana.com or copy from template
+download_dashboard() {
+    local service="$1"
+    local dashboard_source="${GRAFANA_DASHBOARDS[$service]}"
+    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
+    local template_dir="$HOME/monitoring/grafana/dashboard-templates"
+    
+    [[ -z "$dashboard_source" || "$dashboard_source" == "custom" ]] && return 1
+    [[ ! -d "$dashboard_dir" ]] && mkdir -p "$dashboard_dir"
+    
+    # Handle template files
+    if [[ "$dashboard_source" == template:* ]]; then
+        local template_path="${dashboard_source#template:}"
+        local template_file="$template_dir/$template_path"
+        local filename="${service}-$(basename "$template_path")"
+        local filepath="$dashboard_dir/$filename"
+        
+        if [[ -f "$template_file" ]]; then
+            cp "$template_file" "$filepath"
+            echo "Installed $service dashboard from template"
+            return 0
+        else
+            echo "Template not found: $template_file"
+            return 1
+        fi
+    fi
+    
+    # Handle Grafana.com dashboard IDs
+    local dashboard_id="$dashboard_source"
+    local filename="${service}-${dashboard_id}.json"
+    local filepath="$dashboard_dir/$filename"
+    
+    # Skip if already exists and is recent (less than 24h old)
+    if [[ -f "$filepath" ]]; then
+        local file_age=$(( $(date +%s) - $(stat -c %Y "$filepath") ))
+        if [[ $file_age -lt 86400 ]]; then
+            return 0  # Already exists and recent
+        fi
+    fi
+    
+    # Download dashboard JSON from Grafana.com
+    if curl -s "https://grafana.com/api/dashboards/${dashboard_id}/revisions/latest/download" > "$filepath.tmp"; then
+        if [[ -s "$filepath.tmp" ]]; then
+            mv "$filepath.tmp" "$filepath"
+            echo "Downloaded $service dashboard ($dashboard_id)"
+            return 0
+        fi
+    fi
+    
+    rm -f "$filepath.tmp"
+    return 1
+}
+
+# Remove dashboard file
+remove_dashboard() {
+    local service="$1"
+    local dashboard_id="${GRAFANA_DASHBOARDS[$service]}"
+    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
+    
+    [[ -z "$dashboard_id" ]] && return 1
+    
+    local filename="${service}-${dashboard_id}.json"
+    local filepath="$dashboard_dir/$filename"
+    
+    if [[ -f "$filepath" ]]; then
+        rm -f "$filepath"
+        echo "Removed $service dashboard"
+        return 0
+    fi
+    return 1
+}
+
+# Sync dashboards with currently installed services
+sync_grafana_dashboards() {
+    [[ ! -d "$HOME/monitoring" ]] && return 1
+    
+    local installed_services=($(get_installed_services))
+    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
+    local restart_needed=false
+    
+    echo "Syncing Grafana dashboards..."
+    
+    # Download dashboards for installed services
+    for service in "${installed_services[@]}"; do
+        if download_dashboard "$service"; then
+            restart_needed=true
+        fi
+    done
+    
+    # Remove dashboards for uninstalled services
+    if [[ -d "$dashboard_dir" ]]; then
+        for dashboard_file in "$dashboard_dir"/*.json; do
+            [[ ! -f "$dashboard_file" ]] && continue
+            
+            local basename=$(basename "$dashboard_file" .json)
+            local service_name=$(echo "$basename" | cut -d'-' -f1)
+            
+            # Check if service is still installed
+            local service_installed=false
+            for installed_service in "${installed_services[@]}"; do
+                if [[ "$service_name" == "$installed_service" ]]; then
+                    service_installed=true
+                    break
+                fi
+            done
+            
+            if [[ "$service_installed" == false ]]; then
+                rm -f "$dashboard_file"
+                echo "Removed unused $service_name dashboard"
+                restart_needed=true
+            fi
+        done
+    fi
+    
+    # Restart Grafana to reload dashboards if changes were made
+    if [[ "$restart_needed" == true ]]; then
+        echo "Restarting Grafana to load dashboard changes..."
+        if docker ps --filter name=monitoring-grafana --filter status=running -q | grep -q .; then
+            docker restart monitoring-grafana >/dev/null 2>&1
+            echo "Grafana restarted successfully"
+        fi
+    else
+        echo "No dashboard changes needed"
+    fi
+}
+
+# Old sync_monitoring_networks function removed - replaced by DICKS
+# All network management now handled by docker_intelligent_connecting_kontainer_system
+
+# Unified event-driven network sync (replaces all other network management)
+sync_monitoring_integration() {
+    [[ ! -d "$HOME/monitoring" ]] && return 0
+    
+    local silent_mode="$1"  # Set to "silent" to suppress output
+    
+    # Discover all current networks
+    local available_networks=($(discover_nodeboi_networks | cut -d':' -f1))
+    local monitoring_dir="$HOME/monitoring"
+    
+    # Get current networks from compose.yml
+    local current_networks=()
+    if [[ -f "$monitoring_dir/compose.yml" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.+-net)$ ]]; then
+                local network="${BASH_REMATCH[1]}"
+                if [[ "$network" != "monitoring" ]]; then
+                    current_networks+=("$network")
+                fi
+            fi
+        done < "$monitoring_dir/compose.yml"
+    fi
+    
+    # Check if networks need updating
+    local current_sorted=($(printf "%s\n" "${current_networks[@]}" | sort | uniq))
+    local available_sorted=($(printf "%s\n" "${available_networks[@]}" | sort | uniq))
+    
+    local networks_changed=false
+    if [[ "${current_sorted[*]}" != "${available_sorted[*]}" ]]; then
+        networks_changed=true
+    fi
+    
+    # Always sync dashboards, only sync networks if changed
+    local actions_taken=""
+    
+    # Sync dashboards
+    if command -v sync_grafana_dashboards >/dev/null 2>&1; then
+        sync_grafana_dashboards >/dev/null 2>&1
+        actions_taken="dashboards"
+    fi
+    
+    # Network changes are already applied above, just track the action
+    if [[ "$networks_changed" == true ]]; then
+        if [[ -n "$actions_taken" ]]; then
+            actions_taken="$actions_taken + networks"
+        else
+            actions_taken="networks"
+        fi
+    fi
+    
+    # Output result unless silent
+    if [[ "$silent_mode" != "silent" && -n "$actions_taken" ]]; then
+        echo "✓ Monitoring integration updated ($actions_taken)"
+    fi
+}
+
+#============================================================================
+# DICKS - Docker Intelligent Connecting Kontainer System
+#============================================================================
+
+# Unified network connection management for all NodeBoi services
+# DICKS rebuilds compose.yml and .env files instead of runtime network changes
+docker_intelligent_connecting_kontainer_system() {
+    local operation="${1:-sync}"  # sync, status, force-rebuild
+    local silent_mode="$2"        # "silent" to suppress output
+    
+    [[ "$silent_mode" != "silent" ]] && echo "DICKS: Rebuilding configuration files..."
+    
+    # Discover ethnode networks based on existing ethnode directories (not just Docker networks)
+    local ethnode_networks=()
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local node_name=$(basename "$dir")
+            local network_name="${node_name}-net"
+            # Only include if Docker network actually exists
+            if docker network inspect "$network_name" >/dev/null 2>&1; then
+                ethnode_networks+=("$network_name")
+            fi
+        fi
+    done
+    
+    # Track what needs to be restarted
+    local services_to_restart=()
+    local changes_made=false
+    
+    # Rebuild monitoring compose.yml if monitoring exists
+    if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" ]]; then
+        rebuild_monitoring_compose_yml "${ethnode_networks[@]}"
+        if [[ $? -eq 0 ]]; then
+            services_to_restart+=("monitoring")
+            changes_made=true
+            [[ "$silent_mode" != "silent" ]] && echo "  → Updated monitoring compose.yml"
+        fi
+    fi
+    
+    # Rebuild Vero .env if Vero exists
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+        rebuild_vero_beacon_urls "${ethnode_networks[@]}"
+        if [[ $? -eq 0 ]]; then
+            services_to_restart+=("vero")
+            changes_made=true  
+            [[ "$silent_mode" != "silent" ]] && echo "  → Updated Vero beacon node URLs"
+        fi
+    fi
+    
+    # Restart services that had configuration changes
+    if [[ "$changes_made" == true ]]; then
+        for service in "${services_to_restart[@]}"; do
+            [[ "$silent_mode" != "silent" ]] && echo "  → Restarting $service to apply changes"
+            case "$service" in
+                "monitoring")
+                    cd "$HOME/monitoring" && docker compose down && docker compose up -d > /dev/null 2>&1
+                    ;;
+                "vero")  
+                    cd "$HOME/vero" && docker compose restart vero > /dev/null 2>&1
+                    ;;
+            esac
+        done
+    fi
+    
+    # Sync dashboards based on current services
+    if command -v sync_grafana_dashboards >/dev/null 2>&1; then
+        sync_grafana_dashboards >/dev/null 2>&1
+    fi
+    
+    # Report results
+    if [[ "$changes_made" == true ]]; then
+        if [[ "$silent_mode" != "silent" ]]; then
+            echo "✓ DICKS updated configuration files and restarted services"
+        fi
+    else
+        if [[ "$silent_mode" != "silent" ]]; then
+            echo "✓ DICKS verified all configurations are optimal"
+        fi
+    fi
+    
+    return 0
+}
+
+# Rebuild monitoring compose.yml with current ethnode networks
+rebuild_monitoring_compose_yml() {
+    local ethnode_networks=("$@")
+    local compose_file="$HOME/monitoring/compose.yml"
+    local temp_file="$compose_file.tmp"
+    
+    # Check if current compose.yml already has all networks
+    local current_networks=()
+    if [[ -f "$compose_file" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*-[[:space:]]+(ethnode[0-9]+-net)$ ]]; then
+                current_networks+=("${BASH_REMATCH[1]}")
+            fi
+        done < "$compose_file"
+    fi
+    
+    # Check if networks match
+    local networks_match=true
+    if [[ ${#current_networks[@]} -ne ${#ethnode_networks[@]} ]]; then
+        networks_match=false
+    else
+        for network in "${ethnode_networks[@]}"; do
+            if [[ ! " ${current_networks[*]} " =~ " ${network} " ]]; then
+                networks_match=false
+                break
+            fi
+        done
+    fi
+    
+    # If networks match, no rebuild needed
+    [[ "$networks_match" == true ]] && return 1
+    
+    # Read current compose.yml and rebuild with updated networks
+    cat > "$temp_file" <<'EOF'
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    container_name: monitoring-prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "${BIND_IP}:${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+EOF
+
+    # Add ethnode networks to prometheus
+    for network in "${ethnode_networks[@]}"; do
+        echo "      - $network" >> "$temp_file"
+    done
+    
+    cat >> "$temp_file" <<'EOF'
+      - web3signer-net
+    depends_on:
+      - node-exporter
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: monitoring-grafana
+    restart: unless-stopped
+    user: "${NODE_UID}:${NODE_GID}"
+    ports:
+      - "${BIND_IP}:${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:${GRAFANA_PORT}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    networks:
+      - monitoring
+EOF
+
+    # Add ethnode networks to grafana
+    for network in "${ethnode_networks[@]}"; do
+        echo "      - $network" >> "$temp_file"
+    done
+    
+    cat >> "$temp_file" <<'EOF'
+      - web3signer-net
+    depends_on:
+      - prometheus
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+  node-exporter:
+    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+    container_name: monitoring-node-exporter
+    restart: unless-stopped
+    user: "root"
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(.*|/)($|/)'
+    ports:
+      - "${BIND_IP}:${NODE_EXPORTER_PORT}:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+    <<: *logging
+
+volumes:
+  prometheus_data:
+    name: monitoring_prometheus_data
+  grafana_data:
+    name: monitoring_grafana_data
+
+networks:
+  monitoring:
+    name: monitoring-net
+    driver: bridge
+EOF
+
+    # Add ethnode network definitions
+    for network in "${ethnode_networks[@]}"; do
+        cat >> "$temp_file" <<EOF
+  $network:
+    external: true
+    name: $network
+EOF
+    done
+    
+    cat >> "$temp_file" <<'EOF'
+  web3signer-net:
+    external: true
+    name: web3signer-net
+EOF
+
+    # Replace original file
+    mv "$temp_file" "$compose_file"
+    return 0
+}
+
+# Rebuild Vero beacon node URLs with current ethnode networks  
+rebuild_vero_beacon_urls() {
+    local ethnode_networks=("$@")
+    local env_file="$HOME/vero/.env"
+    local temp_file="$env_file.tmp"
+    
+    # Build new beacon URLs list
+    local beacon_urls=()
+    for network in "${ethnode_networks[@]}"; do
+        local node_name="${network%-net}"
+        
+        # Detect beacon client for this node
+        local beacon_client="lodestar"  # default
+        if [[ -f "$HOME/$node_name/.env" ]]; then
+            local compose_file=$(grep "COMPOSE_FILE=" "$HOME/$node_name/.env" | cut -d'=' -f2)
+            if [[ "$compose_file" == *"grandine"* ]]; then
+                beacon_client="grandine"
+            elif [[ "$compose_file" == *"lighthouse"* ]]; then
+                beacon_client="lighthouse"
+            elif [[ "$compose_file" == *"teku"* ]]; then
+                beacon_client="teku"
+            elif [[ "$compose_file" == *"lodestar"* ]]; then
+                beacon_client="lodestar"
+            fi
+        fi
+        
+        beacon_urls+=("http://$node_name-$beacon_client:5052")
+    done
+    
+    # Get current beacon URLs
+    local current_urls=""
+    if [[ -f "$env_file" ]]; then
+        current_urls=$(grep "BEACON_NODE_URLS=" "$env_file" | cut -d'=' -f2)
+    fi
+    
+    # Check if URLs need updating
+    local new_urls_str=$(IFS=','; echo "${beacon_urls[*]}")
+    [[ "$current_urls" == "$new_urls_str" ]] && return 1
+    
+    # Update .env file
+    if [[ -f "$env_file" ]]; then
+        # Update existing file
+        sed "s|BEACON_NODE_URLS=.*|BEACON_NODE_URLS=$new_urls_str|g" "$env_file" > "$temp_file"
+        mv "$temp_file" "$env_file"
+    fi
+    
+    return 0
 }

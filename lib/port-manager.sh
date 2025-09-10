@@ -30,6 +30,8 @@ declare -A SERVICE_CONFIGS=(
     ["validator_api"]="2:false:2:validator"           # Validator API ports
     ["ssv_operator"]="4:false:5:plugins"              # SSV operator ports
     ["vero_monitor"]="1:false:10:monitoring"          # Vero monitoring
+    ["web3signer"]="1:false:10:validator"             # Web3signer HTTP API
+    # Note: Vero uses fixed port 9010 for metrics (singleton service)
 )
 
 # Get all currently used ports from system and docker
