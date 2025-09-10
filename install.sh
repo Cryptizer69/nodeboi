@@ -3,7 +3,7 @@
 
 set -e
 
-NODEBOI_VERSION="v0.3.1"
+NODEBOI_VERSION="v0.4.0"
 INSTALL_DIR="$HOME/.nodeboi"
 BINARY_PATH="/usr/local/bin/nodeboi"
 
@@ -21,7 +21,7 @@ fi
 
 # Download and extract
 echo "Downloading NODEBOI ${NODEBOI_VERSION}..."
-curl -sSL "https://github.com/YOUR_USERNAME/nodeboi/archive/${NODEBOI_VERSION}.tar.gz" | tar -xz -C "$HOME"
+curl -sSL "https://github.com/Cryptizer69/nodeboi/archive/${NODEBOI_VERSION}.tar.gz" | tar -xz -C "$HOME"
 mv "$HOME/nodeboi-${NODEBOI_VERSION#v}" "$INSTALL_DIR"
 
 # Make executable
