@@ -1,0 +1,74 @@
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  consensus:
+    container_name: ${NODE_NAME}-grandine
+    restart: "unless-stopped"
+    image: sifrai/grandine:${GRANDINE_VERSION}
+    pull_policy: always
+    user: "${NODE_UID}:${NODE_GID}"
+    stop_grace_period: 1m
+    volumes:
+      - ./data/consensus:/var/lib/grandine
+      - /etc/localtime:/etc/localtime:ro
+      - ./jwt:/var/lib/grandine/ee-secret
+    environment:
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
+      - MEV_BOOST=${MEV_BOOST}
+      - MEV_NODE=${MEV_NODE}
+      - CL_EXTRAS=${CL_EXTRAS:-}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
+      - CL_MINIMAL_NODE=${CL_MINIMAL_NODE:-true}
+      - IPV6=${IPV6:-false}
+      - NETWORK=${NETWORK}
+    ports:
+      - ${HOST_IP:-}:${CL_REST_PORT}:5052
+      - ${HOST_IP:-}:8008:8008
+      - ${HOST_IP:-}:${CL_P2P_PORT}:${CL_P2P_PORT}/tcp
+      - ${HOST_IP:-}:${CL_P2P_PORT}:${CL_P2P_PORT}/udp
+      - ${HOST_IP:-}:${CL_QUIC_PORT}:${CL_QUIC_PORT}/udp
+    networks:
+      default:
+        aliases:
+          - eth2
+          - grandine
+          - consensus
+          - ${CONSENSUS_ALIAS:-default-consensus}
+    <<: *logging
+    entrypoint:
+      - grandine
+      - --disable-upnp
+      - --data-dir=/var/lib/grandine
+      - --network=${NETWORK}
+      - --http-address=0.0.0.0
+      - --http-port=5052
+      - --http-allowed-origins=*
+      - --listen-address=0.0.0.0
+      - --libp2p-port=${CL_P2P_PORT}
+      - --discovery-port=${CL_P2P_PORT}
+      - --quic-port=${CL_QUIC_PORT}
+      - --target-peers=${CL_MAX_PEER_COUNT}
+      - --eth1-rpc-urls=http://execution:8551
+      - --jwt-secret=/var/lib/grandine/ee-secret/jwtsecret
+      - --metrics
+      - --metrics-address=0.0.0.0
+      - --metrics-port=8008
+      - --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+    labels:
+      - prometheus.scrape=true
+      - prometheus.job=grandine
+      - prometheus.port=8008
+      - prometheus.path=/metrics
+      - ethereum.client=grandine
+      - ethereum.layer=consensus
+      - ethereum.network=${NETWORK}
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

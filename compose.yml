@@ -1,0 +1,13 @@
+x-logging: &logging
+ logging:
+   driver: json-file
+   options:
+     max-size: 100m
+     max-file: "3"
+     tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+networks:
+  default:
+    external: true
+    name: nodeboi-net
+    enable_ipv6: ${IPV6:-false}

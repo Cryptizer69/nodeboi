@@ -1,0 +1,30 @@
+# Cache and temporary files
+cache/
+*.cache
+
+# Claude-specific settings
+.claude/
+
+# User-specific configurations
+*.local
+
+# Development scripts
+push_to_github.sh
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*~
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

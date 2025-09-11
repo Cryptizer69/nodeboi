@@ -1,0 +1,77 @@
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  consensus:
+    container_name: ${NODE_NAME}-teku
+    restart: "unless-stopped"
+    image: consensys/teku:${TEKU_VERSION}
+    pull_policy: always
+    user: "${NODE_UID}:${NODE_GID}"
+    stop_grace_period: 1m
+    volumes:
+      - ./data/consensus:/var/lib/teku
+      - /etc/localtime:/etc/localtime:ro
+      - ./jwt:/var/lib/teku/ee-secret
+    environment:
+      - JAVA_OPTS=${TEKU_HEAP:--Xmx7g}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
+      - MEV_BOOST=${MEV_BOOST}
+      - MEV_NODE=${MEV_NODE}
+      - CL_EXTRAS=${CL_EXTRAS:-}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
+      - NETWORK=${NETWORK}
+      - IPV6=${IPV6:-false}
+    ports:
+      - ${HOST_IP:-}:${CL_REST_PORT}:5052
+      - ${HOST_IP:-}:8008:8008
+      - ${HOST_IP:-}:${CL_P2P_PORT}:${CL_P2P_PORT}/tcp
+      - ${HOST_IP:-}:${CL_P2P_PORT}:${CL_P2P_PORT}/udp
+    networks:
+      default:
+        aliases:
+          - eth2
+          - teku
+          - consensus
+          - ${CONSENSUS_ALIAS:-default-consensus}
+    <<: *logging
+    entrypoint:
+      - /opt/teku/bin/teku
+      - --data-path=/var/lib/teku
+      - --log-destination=CONSOLE
+      - --network=${NETWORK}
+      - --ee-endpoint=${EL_NODE}
+      - --ee-jwt-secret-file=/var/lib/teku/ee-secret/jwtsecret
+      - --eth1-deposit-contract-max-request-size=1000
+      - --p2p-port=${CL_P2P_PORT}
+      - --p2p-peer-upper-bound=${CL_MAX_PEER_COUNT}
+      - --p2p-peer-lower-bound=${CL_MIN_PEER_COUNT}
+      - --logging=INFO
+      - --rest-api-host-allowlist=*
+      - --rest-api-enabled=true
+      - --rest-api-interface=0.0.0.0
+      - --rest-api-port=5052
+      - --beacon-liveness-tracking-enabled=true
+      - --metrics-enabled=true
+      - --metrics-port=8008
+      - --metrics-interface=0.0.0.0
+      - --metrics-host-allowlist=*
+      - --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+    labels:
+      - prometheus.scrape=true
+      - prometheus.job=teku
+      - prometheus.port=8008
+      - prometheus.path=/metrics
+      - ethereum.client=teku
+      - ethereum.layer=consensus
+      - ethereum.network=${NETWORK}
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}
+
