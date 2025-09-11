@@ -684,23 +684,15 @@ check_vero_health() {
             local beacon_url_list=$(echo "$beacon_urls" | tr ',' ' ')
             local reachable_count=0
             for url in $beacon_url_list; do
-                # Extract the container name from the URL (e.g., ethnode1-grandine from http://ethnode1-grandine:5052)
-                local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:5052||g')
+                # Extract the container name and port from the URL (e.g., ethnode1-grandine:5052 from http://ethnode1-grandine:5052)
+                local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:.*||g')
+                local port=$(echo "$url" | sed 's|.*:||g')
                 local display_name=$(echo "$container_name" | sed 's|-[a-z]*||g')  # ethnode1 from ethnode1-grandine
                 
-                # Map container names to localhost ports for dashboard health checks
-                local check_url=""
-                case "$container_name" in
-                    "ethnode1-grandine") check_url="http://127.0.0.1:5052" ;;
-                    "ethnode2-lodestar") check_url="http://127.0.0.1:5054" ;;
-                    "ethnode3-lighthouse") check_url="http://127.0.0.1:5056" ;;
-                    "ethnode4-teku") check_url="http://127.0.0.1:5058" ;;
-                    *) check_url="$url" ;;  # fallback to original URL
-                esac
-                
-                # Check if the beacon node is reachable
-                # Try both health and syncing endpoints as different clients support different endpoints
-                if curl -s --max-time 2 "${check_url}/eth/v1/node/health" >/dev/null 2>&1 || curl -s --max-time 2 "${check_url}/eth/v1/node/syncing" >/dev/null 2>&1; then
+                # Check if the beacon node container is running and healthy
+                # Use docker exec to check from within the container's network with the correct port
+                if docker exec "$container_name" curl -s --max-time 2 "http://localhost:${port}/eth/v1/node/health" >/dev/null 2>&1 || \
+                   docker exec "$container_name" curl -s --max-time 2 "http://localhost:${port}/eth/v1/node/syncing" >/dev/null 2>&1; then
                     printf "     ${GREEN}✓${NC} %s\n" "$display_name"
                     ((reachable_count++))
                 else

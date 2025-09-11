@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="v0.4.0"
+SCRIPT_VERSION="v0.4.1"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -242,9 +242,7 @@ manage_web3signer_menu() {
 manage_vero_menu() {
     while true; do
         local vero_options=(
-            "Start Vero"
-            "Stop Vero"
-            "Restart Vero"
+            "Start/Stop Vero"
             "View logs"
             "Manage beacon endpoints"
             "Update fee recipient"
@@ -257,22 +255,17 @@ manage_vero_menu() {
             local selected_option="${vero_options[$selection]}"
             
             case "$selected_option" in
-                "Start Vero")
-                    echo -e "${UI_MUTED}Starting Vero...${NC}"
-                    cd ~/vero && docker compose up -d
-                    echo -e "${GREEN}✓ Vero started${NC}"
-                    press_enter
-                    ;;
-                "Stop Vero")
-                    echo -e "${UI_MUTED}Stopping Vero...${NC}"
-                    cd ~/vero && docker compose stop vero
-                    echo -e "${GREEN}✓ Vero stopped${NC}"
-                    press_enter
-                    ;;
-                "Restart Vero")
-                    echo -e "${UI_MUTED}Restarting Vero...${NC}"
-                    cd ~/vero && docker compose restart vero
-                    echo -e "${GREEN}✓ Vero restarted${NC}"
+                "Start/Stop Vero")
+                    # Check if Vero is running
+                    if cd ~/vero && docker compose ps | grep -q "vero.*running"; then
+                        echo -e "${UI_MUTED}Stopping Vero...${NC}"
+                        docker compose stop vero
+                        echo -e "${GREEN}✓ Vero stopped${NC}"
+                    else
+                        echo -e "${UI_MUTED}Starting Vero...${NC}"
+                        docker compose up -d
+                        echo -e "${GREEN}✓ Vero started${NC}"
+                    fi
                     press_enter
                     ;;
                 "View logs")
