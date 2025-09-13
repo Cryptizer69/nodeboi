@@ -688,10 +688,12 @@ except:
     pass
 print(result)
 " 2>/dev/null)
+        local attestation_indicator="${RED}✗${NC}"
         if [[ "$attestation_check" == "ATTESTING" ]]; then
             attestation_status="attesting"
+            attestation_indicator="${GREEN}✓${NC}"
         fi
-        printf "     ${vero_check} %-20s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
+        printf "     ${attestation_indicator} %-20s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
         printf "     %s %-20s\n" "" "Connected to:"
         
         # Handle case where no beacon nodes are configured
