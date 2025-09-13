@@ -408,8 +408,6 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         local cl_health_code=$(curl -s -w "%{http_code}" -o /dev/null "http://${check_host}:${cl_rest}/eth/v1/node/health" --max-time 2 2>/dev/null)
 
         if [[ -n "$cl_sync_response" ]]; then
-            cl_check="${GREEN}✓${NC}"
-            
             # Get actual running version
             local cl_version_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null)
             if [[ -n "$cl_version_response" ]] && echo "$cl_version_response" | grep -q '"data"'; then
@@ -423,12 +421,15 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
             # Check for various states - prioritize syncing over EL offline
             # Also check health endpoint for 206 status (syncing)
             if echo "$cl_sync_response" | grep -q '"is_syncing":true' || [[ "$cl_health_code" == "206" ]]; then
+                cl_check="${GREEN}✓${NC}"
                 cl_sync_status=" (Syncing)"
             elif echo "$cl_sync_response" | grep -q '"el_offline":true'; then
-                # Only show EL Offline if not syncing (indicates real connectivity issue)
+                # EL Offline is an error state - show red cross
+                cl_check="${RED}✗${NC}"
                 cl_sync_status=" (EL Offline)"
             else
-                # Synced or optimistic - don't show status
+                # Synced or optimistic - show green checkmark, no status
+                cl_check="${GREEN}✓${NC}"
                 cl_sync_status=""
             fi
         elif [[ "$cl_health_code" == "206" ]]; then
