@@ -127,6 +127,61 @@ prompt_node_name() {
     echo "$default_name"
     return 0
 }
+
+# Intelligent endpoint discovery function
+discover_beacon_endpoint() {
+    local ethnode_name="$1"
+    local ethnode_dir="$HOME/$ethnode_name"
+    
+    # Return empty if ethnode doesn't exist
+    if [[ ! -d "$ethnode_dir" || ! -f "$ethnode_dir/.env" ]]; then
+        return 1
+    fi
+    
+    # Get the REST port from configuration
+    local rest_port=$(grep "CL_REST_PORT=" "$ethnode_dir/.env" | cut -d'=' -f2)
+    if [[ -z "$rest_port" ]]; then
+        return 1
+    fi
+    
+    # Detect the actual consensus client from compose configuration
+    local compose_file=$(grep "COMPOSE_FILE=" "$ethnode_dir/.env" | cut -d'=' -f2)
+    local beacon_client=""
+    
+    if [[ "$compose_file" == *"grandine"* ]]; then
+        beacon_client="grandine"
+    elif [[ "$compose_file" == *"lodestar"* ]]; then
+        beacon_client="lodestar"  
+    elif [[ "$compose_file" == *"teku"* ]]; then
+        beacon_client="teku"
+    elif [[ "$compose_file" == *"lighthouse"* ]]; then
+        beacon_client="lighthouse"
+    else
+        # Fallback: try to detect from running containers
+        if docker ps --format "{{.Names}}" | grep -q "${ethnode_name}-grandine"; then
+            beacon_client="grandine"
+        elif docker ps --format "{{.Names}}" | grep -q "${ethnode_name}-lodestar"; then
+            beacon_client="lodestar"
+        elif docker ps --format "{{.Names}}" | grep -q "${ethnode_name}-teku"; then
+            beacon_client="teku"
+        elif docker ps --format "{{.Names}}" | grep -q "${ethnode_name}-lighthouse"; then
+            beacon_client="lighthouse"
+        else
+            return 1
+        fi
+    fi
+    
+    # For container-to-container communication, all beacon nodes use internal port 5052
+    # The REST port from config is for external host access only
+    local beacon_url="http://${ethnode_name}-${beacon_client}:5052"
+    
+    # Optional: Verify the endpoint is reachable (skip for now to avoid blocking)
+    # We could add a timeout-based health check here if needed
+    
+    # Return the discovered endpoint
+    echo "$beacon_url"
+    return 0
+}
 prompt_network() {
     local network_options=("Hoodi testnet" "Ethereum mainnet")
     
@@ -536,6 +591,220 @@ cleanup_failed_installation() {
     # No system user cleanup needed - using current user
 }
 
+# Cleanup handler for atomic installation
+atomic_installation_cleanup() {
+    local exit_code=$?
+    local node_name="$1"
+    local staging_dir="$2"
+    local installation_success="$3"
+    
+    set +e  # Disable error exit for cleanup
+    
+    # Prevent double cleanup
+    if [[ "${installation_success:-false}" == "true" ]]; then
+        return 0
+    fi
+    
+    echo -e "\n${RED}✗${NC} Ethnode installation failed"
+    echo -e "${UI_MUTED}Performing complete cleanup...${NC}"
+    
+    # Stop and remove any Docker resources
+    if [[ -d "$staging_dir" && -f "$staging_dir/compose.yml" ]]; then
+        cd "$staging_dir" && docker compose down -v --remove-orphans 2>/dev/null || true
+    fi
+    
+    # Remove containers by name pattern
+    if [[ -n "$node_name" ]]; then
+        docker ps -aq --filter "name=${node_name}" | xargs -r docker rm -f 2>/dev/null || true
+        # Remove any networks created
+        # Note: Using shared nodeboi-net, no individual network to remove
+    fi
+    
+    # Remove staging directory
+    [[ -n "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
+    
+    # Never remove final_dir in cleanup - only staging
+    
+    echo -e "${GREEN}✓ Cleanup completed${NC}"
+    echo -e "${UI_MUTED}Installation aborted - no partial installation left behind${NC}"
+    
+    press_enter
+    return $exit_code
+}
+
+# Collect installation configuration from user
+collect_installation_config() {
+    local -n config_ref=$1
+    
+    config_ref[node_name]=$(prompt_node_name)
+    [[ -z "${config_ref[node_name]}" ]] && return 1
+    
+    config_ref[network]=$(prompt_network)
+    [[ -z "${config_ref[network]}" ]] && return 1
+    
+    config_ref[exec_client]=$(prompt_execution_client)
+    [[ -z "${config_ref[exec_client]}" ]] && return 1
+    
+    config_ref[exec_version]=$(prompt_version "${config_ref[exec_client]}" "execution")
+    [[ -z "${config_ref[exec_version]}" ]] && return 1
+    
+    config_ref[cons_client]=$(prompt_consensus_client)
+    [[ -z "${config_ref[cons_client]}" ]] && return 1
+    
+    config_ref[cons_version]=$(prompt_version "${config_ref[cons_client]}" "consensus")
+    [[ -z "${config_ref[cons_version]}" ]] && return 1
+    
+    return 0
+}
+
+# Configure MEV-boost installation option
+configure_mevboost_option() {
+    local -n config_ref=$1
+    
+    local mevboost_options=("Install with MEV-boost" "Skip MEV-boost")
+    local mevboost_choice
+    
+    set +e
+    mevboost_choice=$(fancy_select_menu "MEV-boost Configuration" "${mevboost_options[@]}")
+    local menu_result=$?
+    set -e
+    
+    if [[ $menu_result -eq 0 ]]; then
+        if [[ $mevboost_choice -eq 0 ]]; then
+            echo -e "${UI_MUTED}MEV-boost will be included${NC}"
+            set +e
+            config_ref[mevboost_version]=$(prompt_version "mevboost" "mevboost")
+            local version_result=$?
+            set -e
+            case $version_result in
+                0) echo -e "${UI_MUTED}Using MEV-boost version: ${config_ref[mevboost_version]}${NC}" ;;
+                *) return 1 ;;
+            esac
+            config_ref[mevboost_choice]=0
+        else
+            echo -e "${UI_MUTED}Skipping MEV-boost installation${NC}"
+            config_ref[mevboost_version]=""
+            config_ref[mevboost_choice]=1
+        fi
+    else
+        return 1
+    fi
+    
+    return 0
+}
+
+# Configure network access level
+configure_network_access() {
+    local node_dir="$1"
+    
+    local access_options=(
+        "My machine only (most secure) - 127.0.0.1"
+        "Local network access - Your LAN IP"
+        "All networks (use with caution) - 0.0.0.0"
+    )
+    
+    local access_choice
+    if access_choice=$(fancy_select_menu "Choose access level for RPC/REST APIs" "${access_options[@]}"); then
+        access_choice=$((access_choice + 1))
+    else
+        access_choice=1
+    fi
+
+    case "$access_choice" in
+        2)
+            local detected_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
+            echo -e "${UI_MUTED}Using detected local network IP: $detected_ip${NC}"
+            sed -i "s/HOST_IP=.*/HOST_IP=$detected_ip/" "$node_dir/.env"
+            echo -e "${YELLOW}⚠ RPC/REST APIs will be accessible from your local network${NC}"
+            ;;
+        3)
+            sed -i "s/HOST_IP=.*/HOST_IP=0.0.0.0/" "$node_dir/.env"
+            echo -e "${RED}⚠ WARNING: RPC/REST APIs accessible from ALL networks${NC}"
+            echo -e "${UI_MUTED}Make sure you haven't forwarded these ports on your router!${NC}"
+            local ack_options=("I understand the security risk")
+            fancy_select_menu "Security Warning Acknowledgment" "${ack_options[@]}" > /dev/null
+            ;;
+        *)
+            sed -i "s/HOST_IP=.*/HOST_IP=127.0.0.1/" "$node_dir/.env"
+            echo -e "${UI_MUTED}APIs restricted to your machine only${NC}"
+            ;;
+    esac
+}
+
+# Configure port forwarding
+configure_port_forwarding() {
+    local node_dir="$1"
+    
+    echo -e "\n${UI_MUTED}Port Forwarding Configuration\n==============================${NC}"
+    
+    # Get assigned ports
+    local el_p2p=$(grep "EL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+    local cl_p2p=$(grep "CL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+    
+    # Show port configuration with editable prefilled inputs
+    local new_el_p2p
+    if new_el_p2p=$(fancy_text_input "Port Configuration" "Suggested available execution P2P port (TCP+UDP):" "$el_p2p" "validate_port"); then
+        if [[ -n "$new_el_p2p" && "$new_el_p2p" != "$el_p2p" ]]; then
+            sed -i "s/EL_P2P_PORT=.*/EL_P2P_PORT=$new_el_p2p/" "$node_dir/.env"
+            sed -i "s/EL_P2P_PORT_2=.*/EL_P2P_PORT_2=$((new_el_p2p + 1))/" "$node_dir/.env"
+        fi
+    else
+        return 1
+    fi
+    
+    local new_cl_p2p
+    if new_cl_p2p=$(fancy_text_input "Port Configuration" "Suggested available consensus P2P port (TCP+UDP):" "$cl_p2p" "validate_port"); then
+        if [[ -n "$new_cl_p2p" && "$new_cl_p2p" != "$cl_p2p" ]]; then
+            sed -i "s/CL_P2P_PORT=.*/CL_P2P_PORT=$new_cl_p2p/" "$node_dir/.env"
+            sed -i "s/CL_QUIC_PORT=.*/CL_QUIC_PORT=$((new_cl_p2p + 1))/" "$node_dir/.env"
+        fi
+    else
+        return 1
+    fi
+    
+    return 0
+}
+
+# Display installation summary and get final confirmation
+confirm_installation() {
+    local -n config_ref=$1
+    local node_dir="$2"
+    
+    echo -e "\n${UI_MUTED}Configuration Summary\n====================${NC}"
+    echo -e "${UI_MUTED}  Node name: ${config_ref[node_name]}${NC}"
+    echo -e "${UI_MUTED}  Network: ${config_ref[network]}${NC}"
+    echo -e "${UI_MUTED}  Execution: ${config_ref[exec_client]} (version: ${config_ref[exec_version]})${NC}"
+    echo -e "${UI_MUTED}  Consensus: ${config_ref[cons_client]} (version: ${config_ref[cons_version]})${NC}"
+    
+    if [[ ${config_ref[mevboost_choice]} -eq 0 ]]; then
+        local mevboost_version=$(grep "MEVBOOST_VERSION=" "$node_dir/.env" | cut -d'=' -f2)
+        echo -e "${UI_MUTED}  MEV-boost: Yes (version: $mevboost_version)${NC}"
+    else
+        echo -e "${UI_MUTED}  MEV-boost: No${NC}"
+    fi
+    
+    # Show network access and port configuration
+    local host_ip=$(grep "HOST_IP=" "$node_dir/.env" | cut -d'=' -f2)
+    local el_p2p=$(grep "EL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+    local cl_p2p=$(grep "CL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
+    
+    echo -e "${UI_MUTED}  Network access: $host_ip${NC}"
+    echo -e "${UI_MUTED}  Execution P2P port: $el_p2p${NC}"
+    echo -e "${UI_MUTED}  Consensus P2P port: $cl_p2p${NC}"
+    echo
+    
+    echo -e "${UI_PRIMARY}Launch ${config_ref[node_name]} now? [y/n]:${NC} " && read -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z "$REPLY" ]]; then
+        echo -e "${UI_MUTED}Launching ${config_ref[node_name]}...${NC}"
+        return 0
+    else
+        echo -e "${UI_MUTED}Installation cancelled.${NC}"
+        return 1
+    fi
+}
+
 install_node() {
     # Enable strict error handling for atomic installation
     set -eE
@@ -545,50 +814,17 @@ install_node() {
     local staging_dir=""
     local final_dir=""
     local installation_success=false
-    
-    # Comprehensive cleanup for atomic installation
-    atomic_installation_cleanup() {
-        local exit_code=$?
-        set +e  # Disable error exit for cleanup
-        
-        # Prevent double cleanup
-        if [[ "${installation_success:-false}" == "true" ]]; then
-            return 0
-        fi
-        
-        echo -e "\n${RED}✗${NC} Ethnode installation failed"
-        echo -e "${UI_MUTED}Performing complete cleanup...${NC}"
-        
-        # Stop and remove any Docker resources
-        if [[ -d "$staging_dir" && -f "$staging_dir/compose.yml" ]]; then
-            cd "$staging_dir" && docker compose down -v --remove-orphans 2>/dev/null || true
-        fi
-        
-        # Remove containers by name pattern
-        if [[ -n "$node_name" ]]; then
-            docker ps -aq --filter "name=${node_name}" | xargs -r docker rm -f 2>/dev/null || true
-            # Remove any networks created
-            # Note: Using shared nodeboi-net, no individual network to remove
-        fi
-        
-        # Remove staging directory
-        [[ -n "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
-        
-        # Never remove final_dir in cleanup - only staging
-        
-        echo -e "${GREEN}✓ Cleanup completed${NC}"
-        echo -e "${UI_MUTED}Installation aborted - no partial installation left behind${NC}"
-        
-        press_enter
-        return $exit_code
-    }
+    declare -A config
     
     # Get configuration (without error trap yet to handle cancellations gracefully)
-    node_name=$(prompt_node_name)
-    [[ -z "$node_name" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        echo -e "${RED}Error: Failed to get node name${NC}" >&2; press_enter; return 
-    }
+    if ! collect_installation_config config; then
+        trap - ERR INT TERM
+        echo -e "${RED}Installation cancelled${NC}" >&2
+        press_enter
+        return
+    fi
+    
+    node_name="${config[node_name]}"
     
     # Set up staging and final directories
     staging_dir="$HOME/.${node_name}-install-$$"  # Temporary staging area
@@ -602,41 +838,11 @@ install_node() {
         return 1
     fi
 
-    local network=$(prompt_network)
-    [[ -z "$network" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        return  # Just return silently - user pressed q or backspace
-    }
-    
-    local exec_client=$(prompt_execution_client)
-    [[ -z "$exec_client" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        echo -e "${RED}Installation cancelled${NC}" >&2; press_enter; return 
-    }
-    
-    local exec_version=$(prompt_version "$exec_client" "execution")
-    [[ -z "$exec_version" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        echo -e "${RED}Installation cancelled${NC}" >&2; press_enter; return 
-    }
-    
-    local cons_client=$(prompt_consensus_client)
-    [[ -z "$cons_client" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        echo -e "${RED}Installation cancelled${NC}" >&2; press_enter; return 
-    }
-    
-    local cons_version=$(prompt_version "$cons_client" "consensus")
-    [[ -z "$cons_version" ]] && { 
-        trap - ERR INT TERM  # Remove trap before returning
-        echo -e "${RED}Installation cancelled${NC}" >&2; press_enter; return 
-    }
-
     # Validate versions exist
     echo -e "${UI_MUTED}Validating Docker images...${NC}"
 
-    if [[ -n "$exec_version" ]] || [[ -n "$cons_version" ]]; then
-        if ! validate_update_images "$HOME/$node_name" "$exec_client" "$exec_version" "$cons_client" "$cons_version"; then
+    if [[ -n "${config[exec_version]}" ]] || [[ -n "${config[cons_version]}" ]]; then
+        if ! validate_update_images "$HOME/$node_name" "${config[exec_client]}" "${config[exec_version]}" "${config[cons_client]}" "${config[cons_version]}"; then
             echo -e "${YELLOW}Warning: Some Docker images are not available yet.${NC}"
             echo -e "${UI_MUTED}This might be because:${NC}"
             echo -e "${UI_MUTED}  - The release is very new (images still building)${NC}"
@@ -678,157 +884,38 @@ install_node() {
 
     # Copy configuration files to staging
     echo -e "${UI_MUTED}Creating configuration files...${NC}"
-    copy_config_files "$node_dir" "$exec_client" "$cons_client"
+    copy_config_files "$node_dir" "${config[exec_client]}" "${config[cons_client]}"
     
     # Update compose.yml to use 2-network model (nodeboi-net)
     echo -e "${UI_MUTED}Configuring for 2-network architecture...${NC}"
     create_atomic_compose_file "$node_dir"
 
     # Update versions if specified
-    [[ -n "$exec_version" ]] && update_client_version "$node_dir" "$exec_client" "$exec_version"
-    [[ -n "$cons_version" ]] && update_client_version "$node_dir" "$cons_client" "$cons_version"
-    [[ -n "$mevboost_version" ]] && update_client_version "$node_dir" "mevboost" "$mevboost_version"
+    [[ -n "${config[exec_version]}" ]] && update_client_version "$node_dir" "${config[exec_client]}" "${config[exec_version]}"
+    [[ -n "${config[cons_version]}" ]] && update_client_version "$node_dir" "${config[cons_client]}" "${config[cons_version]}"
+    [[ -n "${config[mevboost_version]}" ]] && update_client_version "$node_dir" "mevboost" "${config[mevboost_version]}"
 
     # Configure environment file with ports
     echo -e "${UI_MUTED}Configuring environment file...${NC}"
-    configure_env_file "$node_dir" "$node_name" "$uid_gid" "$exec_client" "$cons_client" "$network"
+    configure_env_file "$node_dir" "$node_name" "$uid_gid" "${config[exec_client]}" "${config[cons_client]}" "${config[network]}"
 
-    # MEV-boost installation choice
-    local mevboost_options=("Install with MEV-boost" "Skip MEV-boost")
-    local mevboost_choice
-    
-    # Temporarily disable error trap for interactive menu
-    set +e
-    mevboost_choice=$(fancy_select_menu "MEV-boost Configuration" "${mevboost_options[@]}")
-    local menu_result=$?
-    set -e
-    
-    if [[ $menu_result -eq 0 ]]; then
-        # Handle MEV-boost choice
-        if [[ $mevboost_choice -eq 0 ]]; then
-            echo -e "${UI_MUTED}MEV-boost will be included${NC}"
-            # Get MEV-boost version
-            local mevboost_version
-            set +e
-            mevboost_version=$(prompt_version "mevboost" "mevboost")
-            local version_result=$?
-            set -e
-            case $version_result in
-                0) echo -e "${UI_MUTED}Using MEV-boost version: $mevboost_version${NC}" ;;
-                *) echo -e "${UI_MUTED}Installation cancelled${NC}"; return ;;
-            esac
-        else
-            echo -e "${UI_MUTED}Skipping MEV-boost installation${NC}"
-            mevboost_version=""
-        fi
-    else
-        # User cancelled - return gracefully
+    # MEV-boost configuration
+    if ! configure_mevboost_option config; then
         echo -e "${UI_MUTED}Installation cancelled${NC}"
         return
     fi
 
     # Network access configuration
-    
-    local access_options=(
-        "My machine only (most secure) - 127.0.0.1"
-        "Local network access - Your LAN IP"
-        "All networks (use with caution) - 0.0.0.0"
-    )
-    
-    local access_choice
-    if access_choice=$(fancy_select_menu "Choose access level for RPC/REST APIs" "${access_options[@]}"); then
-        # Increment by 1 to match the original case numbers
-        access_choice=$((access_choice + 1))
-    else
-        # User cancelled - use default (my machine only)
-        access_choice=1
-    fi
+    configure_network_access "$node_dir"
 
-    case "$access_choice" in
-        2)
-            # Get LAN IP and use it automatically
-            local detected_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
-            local lan_ip="$detected_ip"
-            echo -e "${UI_MUTED}Using detected local network IP: $detected_ip${NC}"
-            
-            sed -i "s/HOST_IP=.*/HOST_IP=$lan_ip/" "$node_dir/.env"
-            echo -e "${YELLOW}⚠ RPC/REST APIs will be accessible from your local network${NC}"
-            ;;
-        3)
-            sed -i "s/HOST_IP=.*/HOST_IP=0.0.0.0/" "$node_dir/.env"
-            echo -e "${RED}⚠ WARNING: RPC/REST APIs accessible from ALL networks${NC}"
-            echo -e "${UI_MUTED}Make sure you haven't forwarded these ports on your router!${NC}"
-            
-            local ack_options=("I understand the security risk")
-            fancy_select_menu "Security Warning Acknowledgment" "${ack_options[@]}" > /dev/null
-            ;;
-        *)
-            # Default: my machine only
-            sed -i "s/HOST_IP=.*/HOST_IP=127.0.0.1/" "$node_dir/.env"
-            echo -e "${UI_MUTED}APIs restricted to your machine only${NC}"
-            ;;
-    esac
-
-    # Port forwarding configuration step
-    echo -e "\n${UI_MUTED}Port Forwarding Configuration\n==============================${NC}"
-
-    # Get assigned ports
-    local el_p2p=$(grep "EL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
-    local cl_p2p=$(grep "CL_P2P_PORT=" "$node_dir/.env" | cut -d'=' -f2)
-
-    # Show port configuration with editable prefilled inputs
-    local new_el_p2p
-    if new_el_p2p=$(fancy_text_input "Port Configuration" "Suggested available execution P2P port (TCP+UDP):" "$el_p2p" "validate_port"); then
-        if [[ -n "$new_el_p2p" && "$new_el_p2p" != "$el_p2p" ]]; then
-            sed -i "s/EL_P2P_PORT=.*/EL_P2P_PORT=$new_el_p2p/" "$node_dir/.env"
-            sed -i "s/EL_P2P_PORT_2=.*/EL_P2P_PORT_2=$((new_el_p2p + 1))/" "$node_dir/.env"
-            el_p2p=$new_el_p2p
-        fi
-    else
-        echo -e "${UI_MUTED}Installation cancelled.${NC}"
-        return
-    fi
-
-    local new_cl_p2p
-    if new_cl_p2p=$(fancy_text_input "Port Configuration" "Suggested available consensus P2P port (TCP+UDP):" "$cl_p2p" "validate_port"); then
-        if [[ -n "$new_cl_p2p" && "$new_cl_p2p" != "$cl_p2p" ]]; then
-            sed -i "s/CL_P2P_PORT=.*/CL_P2P_PORT=$new_cl_p2p/" "$node_dir/.env"
-            sed -i "s/CL_QUIC_PORT=.*/CL_QUIC_PORT=$((new_cl_p2p + 1))/" "$node_dir/.env"
-            cl_p2p=$new_cl_p2p
-        fi
-    else
+    # Port forwarding configuration
+    if ! configure_port_forwarding "$node_dir"; then
         echo -e "${UI_MUTED}Installation cancelled.${NC}"
         return
     fi
 
     # Configuration Summary and final confirmation
-    echo -e "\n${UI_MUTED}Configuration Summary\n====================${NC}"
-    echo -e "${UI_MUTED}  Node name: $node_name${NC}"
-    echo -e "${UI_MUTED}  Network: $network${NC}"
-    echo -e "${UI_MUTED}  Execution: $exec_client (version: $exec_version)${NC}"
-    echo -e "${UI_MUTED}  Consensus: $cons_client (version: $cons_version)${NC}"
-    if [[ $mevboost_choice -eq 0 ]]; then
-        local mevboost_version=$(grep "MEVBOOST_VERSION=" "$node_dir/.env" | cut -d'=' -f2)
-        echo -e "${UI_MUTED}  MEV-boost: Yes (version: $mevboost_version)${NC}"
-    else
-        echo -e "${UI_MUTED}  MEV-boost: No${NC}"
-    fi
-    
-    # Show network access configuration
-    local host_ip=$(grep "HOST_IP=" "$node_dir/.env" | cut -d'=' -f2)
-    echo -e "${UI_MUTED}  Network access: $host_ip${NC}"
-    
-    # Show port configuration
-    echo -e "${UI_MUTED}  Execution P2P port: $el_p2p${NC}"
-    echo -e "${UI_MUTED}  Consensus P2P port: $cl_p2p${NC}"
-    echo
-
-    echo -e "${UI_PRIMARY}Launch $node_name now? [y/n]:${NC} " && read -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z "$REPLY" ]]; then
-        echo -e "${UI_MUTED}Launching $node_name...${NC}"
-    else
-        echo -e "${UI_MUTED}Installation cancelled.${NC}"
+    if ! confirm_installation config "$node_dir"; then
         cleanup_failed_installation "$node_name"
         press_enter
         return
@@ -1008,19 +1095,24 @@ EOF
                 beacon_client="lodestar" # fallback
             fi
             
-            # For container-to-container communication, always use internal port 5052
-            local new_beacon_url="http://${node_name}-${beacon_client}:5052"
+            # Use intelligent endpoint discovery to get the correct beacon URL
+            local new_beacon_url=$(discover_beacon_endpoint "$node_name")
+            if [[ -z "$new_beacon_url" ]]; then
+                echo -e "${RED}  → Error: Could not discover beacon endpoint for ${node_name}${NC}"
+                return 1
+            fi
             local updated_beacon_urls="${current_beacon_urls},${new_beacon_url}"
             
             # Update Vero configuration
             sed -i "s|BEACON_NODE_URLS=.*|BEACON_NODE_URLS=${updated_beacon_urls}|g" "$HOME/vero/.env"
             
             # Add network connection to Vero compose file if not already present
-            if ! grep -q "nodeboi-net:" "$HOME/vero/compose.yml"; then
-                # Add to networks section in compose file
-                sed -i "/web3signer-net: {}/a\\      nodeboi-net: {}" "$HOME/vero/compose.yml"
+            # Check if Vero is already connected to nodeboi-net (via 'nodeboi' network alias)
+            if ! grep -q "name: nodeboi-net" "$HOME/vero/compose.yml"; then
+                # Add to networks section in compose file  
+                sed -i "/web3signer: {}/a\\      nodeboi: {}" "$HOME/vero/compose.yml"
                 # Add to external networks section  
-                sed -i "/name: web3signer-net/a\\  nodeboi-net:\n    external: true\n    name: nodeboi-net" "$HOME/vero/compose.yml"
+                sed -i "/name: web3signer-net/a\\  nodeboi:\n    external: true\n    name: nodeboi-net" "$HOME/vero/compose.yml"
             fi
             
             echo -e "${GREEN}✓ Connected $node_name to Vero${NC}"
@@ -1485,8 +1577,12 @@ add_ethnode_to_vero() {
         current_urls=$(grep "^BEACON_NODE_URLS=" "$env_file" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
     fi
     
-    # Create new beacon URL for container-to-container communication
-    local new_url="http://${new_node}-${beacon_client}:5052"
+    # Use intelligent endpoint discovery to get the correct beacon URL
+    local new_url=$(discover_beacon_endpoint "$new_node")
+    if [[ -z "$new_url" ]]; then
+        echo -e "${RED}  → Error: Could not discover beacon endpoint for ${new_node}${NC}"
+        return 1
+    fi
     
     # Check if URL is already present
     if [[ -n "$current_urls" && "$current_urls" == *"$new_url"* ]]; then

@@ -363,8 +363,6 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
     --max-time 2 2>/dev/null)
 
         if [[ -n "$sync_response" ]] && echo "$sync_response" | grep -q '"result"'; then
-            el_check="${GREEN}✓${NC}"
-            
             # Get actual running version
             local version_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 -H "Content-Type: application/json" \
@@ -378,21 +376,71 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 fi
             fi
             
+            # Check for error conditions first
+            local peer_count_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
+                --max-time 2 2>/dev/null)
+            local peer_count="0"
+            if [[ -n "$peer_count_response" ]] && echo "$peer_count_response" | grep -q '"result"'; then
+                peer_count=$(echo "$peer_count_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+                # Convert hex to decimal
+                peer_count=$((${peer_count:-0x0}))
+            fi
+            
             # Check if syncing (result is not false)
             if ! echo "$sync_response" | grep -q '"result":false'; then
+                el_check="${GREEN}✓${NC}"
                 el_sync_status=" (Syncing)"
             elif echo "$sync_response" | grep -q '"result":false'; then
-                # Check if actually synced or waiting
+                # Check if actually synced or has issues
                 local block_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                     -H "Content-Type: application/json" \
                     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
                     --max-time 2 2>/dev/null)
 
                 if echo "$block_response" | grep -q '"result":"0x0"'; then
+                    el_check="${GREEN}✓${NC}"
                     el_sync_status=" (Waiting)"
+                elif [[ $peer_count -eq 0 ]]; then
+                    # No peers - this is an error condition
+                    el_check="${RED}✗${NC}"
+                    el_sync_status=" (No Peers)"
                 else
-                    # Synced - don't show status
-                    el_sync_status=""
+                    # Check if latest block is recent (block timestamp vs current time)
+                    local latest_block_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
+                        -H "Content-Type: application/json" \
+                        -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}' \
+                        --max-time 2 2>/dev/null)
+                    
+                    if [[ -n "$latest_block_response" ]] && echo "$latest_block_response" | grep -q '"timestamp"'; then
+                        local block_timestamp_hex=$(echo "$latest_block_response" | grep -o '"timestamp":"[^"]*"' | cut -d'"' -f4)
+                        local block_timestamp=$((${block_timestamp_hex:-0x0}))
+                        local current_timestamp=$(date +%s)
+                        local age_seconds=$((current_timestamp - block_timestamp))
+                        
+                        if [[ $age_seconds -gt 600 ]]; then
+                            # Block is more than 10 minutes old - execution client is stuck
+                            el_check="${RED}✗${NC}"
+                            el_sync_status=" (Stalled)"
+                        else
+                            # Recent block and has peers - healthy
+                            el_check="${GREEN}✓${NC}"
+                            el_sync_status=""
+                        fi
+                    else
+                        # Can't get block info - fall back to basic checks
+                        local current_block_hex=$(echo "$block_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+                        local current_block=$((${current_block_hex:-0x0}))
+                        
+                        if [[ $current_block -lt 1000 ]]; then
+                            el_check="${RED}✗${NC}"
+                            el_sync_status=" (Sync Issue)"
+                        else
+                            el_check="${GREEN}✓${NC}"
+                            el_sync_status=""
+                        fi
+                    fi
                 fi
             fi
         elif curl -s -X POST "http://${check_host}:${el_rpc}" \
@@ -419,7 +467,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
             fi
             
             # Check for various states - prioritize syncing over EL offline
-            # Also check health endpoint for 206 status (syncing)
+            # Also check health endpoint for 206 status (syncing or optimistic)
             if echo "$cl_sync_response" | grep -q '"is_syncing":true' || [[ "$cl_health_code" == "206" ]]; then
                 cl_check="${GREEN}✓${NC}"
                 cl_sync_status=" (Syncing)"
@@ -427,8 +475,12 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 # EL Offline is an error state - show red cross
                 cl_check="${RED}✗${NC}"
                 cl_sync_status=" (EL Offline)"
+            elif echo "$cl_sync_response" | grep -q '"is_optimistic":true'; then
+                # Optimistic state - execution layer behind, show warning
+                cl_check="${YELLOW}⚠${NC}"
+                cl_sync_status=" (Optimistic)"
             else
-                # Synced or optimistic - show green checkmark, no status
+                # Fully synced - show green checkmark, no status
                 cl_check="${GREEN}✓${NC}"
                 cl_sync_status=""
             fi

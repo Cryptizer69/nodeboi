@@ -1760,6 +1760,8 @@ manage_monitoring_menu() {
                     ;;
                 "Remove monitoring")
                     remove_monitoring_stack
+                    # After removing monitoring, exit to main menu since monitoring no longer exists
+                    return
                     ;;
                 "Back to main menu")
                     return
@@ -1899,7 +1901,7 @@ manage_services_menu() {
         if selection=$(fancy_select_menu "Available Services" "${menu_options[@]}"); then
             if [[ "$monitoring_installed" == true ]]; then
                 case $selection in
-                    0) remove_monitoring_stack ;;
+                    0) remove_monitoring_stack; return ;;  # Exit to main menu after removal
                     1) return ;;
                 esac
             else

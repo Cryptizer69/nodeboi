@@ -3,7 +3,7 @@
 
 set -e
 
-NODEBOI_VERSION="v0.4.1"
+NODEBOI_VERSION="v0.4.2"
 INSTALL_DIR="$HOME/.nodeboi"
 
 echo "Installing NODEBOI ${NODEBOI_VERSION}..."
