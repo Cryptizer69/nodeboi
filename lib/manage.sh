@@ -125,25 +125,6 @@ check_prerequisites() {
         echo -e "${GREEN}✓${NC} ${UI_MUTED}All prerequisites satisfied${NC}"
     fi
 }
-detect_existing_instances() {
-    echo -e "${GREEN}[INFO]${NC} Scanning for existing Ethereum instances..."
-    local found=false
-
-    for dir in "$HOME"/ethnode*; do
-        if [[ -d "$dir" && -f "$dir/.env" ]]; then
-            echo -e "  Found: ${GREEN}$(basename "$dir")${NC}"
-            found=true
-        fi
-    done
-
-    if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "ethnode"; then
-        echo -e "  Found running Docker containers"
-        found=true
-    fi
-
-    [[ "$found" == true ]] && echo -e "${YELLOW}Note: Existing instances detected. Ports will be auto-adjusted.${NC}" || echo "  No existing instances found"
-    return $([[ "$found" == true ]] && echo 0 || echo 1)
-}
 
 
 safe_docker_stop() {
@@ -1294,35 +1275,6 @@ update_nodeboi() {
     fi
 }
 
-# Enhanced log viewing system
-view_logs_menu() {
-    while true; do
-        local log_options=(
-            "View logs for specific node"
-            "View logs for all nodes (consolidated)"
-            "View logs by service type"
-            "Split-screen log viewer (all clients)"
-            "Follow logs (live) - specific node"
-            "Follow logs (live) - all nodes"
-            "Back to manage nodes menu"
-        )
-
-        local selection
-        if selection=$(fancy_select_menu "Log Viewer" "${log_options[@]}"); then
-            case $selection in
-                0) view_single_node_logs ;;
-                1) view_all_nodes_logs ;;
-                2) view_logs_by_service ;;
-                3) view_split_screen_logs ;;
-                4) follow_single_node_logs ;;
-                5) follow_all_nodes_logs ;;
-                6) return ;;
-            esac
-        else
-            return
-        fi
-    done
-}
 
 # View logs for a specific node
 view_single_node_logs() {

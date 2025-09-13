@@ -252,42 +252,6 @@ EOF
     [[ -n "$mevboost_port" ]] && echo "MEVBOOST_PORT=${mevboost_port}"
 }
 
-# Reserve ports for future use (creates a reservation file)
-reserve_ports() {
-    local service_name="$1"
-    shift
-    local ports=("$@")
-    
-    local reservation_file="/tmp/nodeboi_port_reservations"
-    echo "# Reserved ports for $service_name at $(date)" >> "$reservation_file"
-    printf '%s:%s\n' "$service_name" "${ports[*]}" >> "$reservation_file"
-}
-
-# Release reserved ports
-release_ports() {
-    local service_name="$1"
-    local reservation_file="/tmp/nodeboi_port_reservations"
-    
-    if [[ -f "$reservation_file" ]]; then
-        sed -i "/^${service_name}:/d" "$reservation_file"
-    fi
-}
-
-# Get summary of current port usage
-show_port_summary() {
-    echo "=== NODEBOI PORT ALLOCATION SUMMARY ==="
-    echo
-    
-    for category in "${!PORT_RANGES[@]}"; do
-        echo "$category: ${PORT_RANGES[$category]}"
-    done
-    
-    echo
-    echo "Currently allocated ports:"
-    local used_ports=$(get_all_used_ports)
-    echo "$used_ports" | tr ' ' '\n' | sort -n | head -20
-    echo "... (showing first 20)"
-}
 
 # Validate port configuration
 validate_port_config() {

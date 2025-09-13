@@ -7,37 +7,6 @@
 
 INSTALL_DIR="$HOME/.nodeboi"
 
-# Comprehensive cleanup function for Web3signer installation
-cleanup_web3signer_installation() {
-    local service_dir="$1"
-    echo -e "\n${YELLOW}Web3signer installation interrupted${NC}"
-    echo -e "${UI_MUTED}Performing thorough cleanup...${NC}"
-    
-    # Stop and remove Docker containers if compose file exists
-    if [[ -f "$service_dir/compose.yml" ]]; then
-        echo -e "${UI_MUTED}  Stopping Web3signer containers...${NC}"
-        cd "$service_dir" && docker compose down -v --remove-orphans 2>/dev/null || true
-    fi
-    
-    # Remove any remaining Web3signer containers by name pattern
-    echo -e "${UI_MUTED}  Removing any remaining containers...${NC}"
-    docker ps -aq --filter "name=web3signer" | xargs -r docker rm -f 2>/dev/null || true
-    
-    # Remove Web3signer volumes
-    echo -e "${UI_MUTED}  Removing volumes...${NC}"
-    docker volume ls -q --filter "name=web3signer" | xargs -r docker volume rm -f 2>/dev/null || true
-    
-    # Remove Web3signer network
-    echo -e "${UI_MUTED}  Removing network...${NC}"
-    docker network ls -q --filter "name=web3signer" | xargs -r docker network rm 2>/dev/null || true
-    
-    # Remove installation directory
-    echo -e "${UI_MUTED}  Removing installation directory...${NC}"
-    rm -rf "$service_dir" 2>/dev/null || true
-    
-    echo -e "${GREEN}✓ Complete cleanup finished${NC}"
-    exit 0
-}
 
 # Interactive key import function
 interactive_key_import() {

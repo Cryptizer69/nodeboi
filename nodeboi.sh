@@ -7,9 +7,12 @@ SCRIPT_VERSION="v0.4.1"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
+# Load common utilities first
+[[ -f "${NODEBOI_LIB}/common.sh" ]] && source "${NODEBOI_LIB}/common.sh"
+
 # Load all library files (except plugins)
 for lib in "${NODEBOI_LIB}"/*.sh; do
-    [[ -f "$lib" && "$(basename "$lib")" != "plugins.sh" ]] && source "$lib"
+    [[ -f "$lib" && "$(basename "$lib")" != "plugins.sh" && "$(basename "$lib")" != "common.sh" ]] && source "$lib"
 done  
 
 # Check if Web3signer is properly installed (not just partial/aborted installation)
@@ -124,8 +127,6 @@ install_validator_submenu() {
             validator_options+=("Install Vero")
         fi
         
-        # Add Teku (placeholder for future implementation)
-        validator_options+=("Install Teku (coming soon)")
         validator_options+=("Back to install menu")
         
         local selection
@@ -136,10 +137,6 @@ install_validator_submenu() {
                 "Install Vero")
                     [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
                     install_vero
-                    ;;
-                "Install Teku (coming soon)")
-                    echo -e "${YELLOW}Teku validator client support is coming soon!${NC}"
-                    press_enter
                     ;;
                 "Back to install menu")
                     return
@@ -186,15 +183,15 @@ manage_web3signer_menu() {
                     echo -e "${UI_MUTED}Starting Web3signer...${NC}"
                     cd ~/web3signer && docker compose up -d
                     echo -e "${GREEN}✓ Web3signer started${NC}"
-                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
-                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+                    refresh_dashboard_background
+                    refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Web3signer")
                     echo -e "${UI_MUTED}Stopping Web3signer...${NC}"
                     cd ~/web3signer && docker compose down
                     echo -e "${GREEN}✓ Web3signer stopped${NC}"
-                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                    refresh_dashboard_background
                     press_enter
                     ;;
                 "View logs")
@@ -275,15 +272,15 @@ manage_vero_menu() {
                     echo -e "${UI_MUTED}Starting Vero...${NC}"
                     cd ~/vero && docker compose up -d
                     echo -e "${GREEN}✓ Vero started${NC}"
-                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
-                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+                    refresh_dashboard_background
+                    refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Vero")
                     echo -e "${UI_MUTED}Stopping Vero...${NC}"
                     cd ~/vero && docker compose down
                     echo -e "${GREEN}✓ Vero stopped${NC}"
-                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                    refresh_dashboard_background
                     press_enter
                     ;;
                 "Start/Stop Vero")
@@ -296,8 +293,8 @@ manage_vero_menu() {
                         echo -e "${UI_MUTED}Starting Vero...${NC}"
                         docker compose up -d
                         echo -e "${GREEN}✓ Vero started${NC}"
-                        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
-                        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+                        refresh_dashboard_background
+                        refresh_monitoring_dashboards
                     fi
                     press_enter
                     ;;
@@ -306,8 +303,7 @@ manage_vero_menu() {
                     cd ~/vero && docker compose logs -f vero
                     ;;
                 "Manage beacon endpoints")
-                    echo -e "${YELLOW}Beacon endpoint management coming soon!${NC}"
-                    echo -e "${UI_MUTED}For now, edit ~/vero/.env manually and restart Vero${NC}"
+                    echo -e "${UI_MUTED}Edit ~/vero/.env manually and restart Vero${NC}"
                     press_enter
                     ;;
                 "Update fee recipient")
@@ -363,11 +359,8 @@ update_vero_fee_recipient() {
     if fancy_confirm "Restart Vero now?" "y"; then
         cd ~/vero && docker compose down vero && docker compose up -d vero
         echo -e "${GREEN}✓ Vero restarted with new fee recipient${NC}"
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
-        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
-        
-        # Refresh dashboard cache to show updated status  
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+        refresh_dashboard
+        refresh_monitoring_dashboards
     fi
     
     press_enter
@@ -469,11 +462,9 @@ main_menu() {
         if selection=$(fancy_select_menu "Main Menu" "${menu_options[@]}"); then
             case $selection in
                 0) install_service_menu 
-                   # Refresh dashboard after returning from install menu
-                   [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache ;;
+                   refresh_dashboard ;;
                 1) manage_service_menu 
-                   # Refresh dashboard after returning from manage menu  
-                   [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache ;;
+                   refresh_dashboard ;;
                 2) system_menu ;;
                 3) exit 0 ;;
             esac
@@ -638,9 +629,7 @@ case "$1" in
         
         # Generate dashboard cache SYNCHRONOUSLY at startup to ensure consistency
         echo -e "${UI_MUTED}Initializing dashboard...${NC}"
-        if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-            source "${NODEBOI_LIB}/manage.sh" && refresh_dashboard_cache
-        fi
+        refresh_dashboard
         
         main_menu
         ;;

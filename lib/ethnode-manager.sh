@@ -51,43 +51,6 @@ EOL
     sudo systemctl enable --now nodeboi
 }
 
-# Node name validation function
-validate_node_name() {
-    local node_name="$1"
-    
-    if [[ "$node_name" == *" "* ]] || [[ ! "$node_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo -e "${UI_MUTED}Node name must contain only letters, numbers, dash, underscore${NC}" >&2
-        return 1
-    fi
-
-    if [[ -d "$HOME/$node_name" ]]; then
-        echo "Directory $HOME/$node_name already exists" >&2
-        return 1
-    fi
-
-    return 0
-}
-
-# IP address validation function
-validate_ip_address() {
-    local ip="$1"
-    
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo -e "${UI_MUTED}Please enter a valid IP address (e.g., 192.168.1.100)${NC}" >&2
-        return 1
-    fi
-    
-    # Check each octet is 0-255
-    IFS='.' read -ra octets <<< "$ip"
-    for octet in "${octets[@]}"; do
-        if [[ $octet -gt 255 ]]; then
-            echo -e "${UI_MUTED}IP address octets must be between 0-255${NC}" >&2
-            return 1
-        fi
-    done
-    
-    return 0
-}
 
 # Validate multiple Docker images during installation
 validate_update_images() {
