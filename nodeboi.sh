@@ -73,7 +73,12 @@ install_service_menu() {
         # Always show validator option (after Web3signer option)
         install_options+=("Install validator")
         
-        install_options+=("Install monitoring" "Back to main menu")
+        # Add monitoring option if not installed
+        if [[ ! -d "$HOME/monitoring" || ! -f "$HOME/monitoring/docker-compose.yml" ]]; then
+            install_options+=("Install monitoring")
+        fi
+        
+        install_options+=("Back to main menu")
         
         local selection
         if selection=$(fancy_select_menu "Install New Service" "${install_options[@]}"); then
@@ -181,12 +186,15 @@ manage_web3signer_menu() {
                     echo -e "${UI_MUTED}Starting Web3signer...${NC}"
                     cd ~/web3signer && docker compose up -d
                     echo -e "${GREEN}✓ Web3signer started${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
                     press_enter
                     ;;
                 "Stop Web3signer")
                     echo -e "${UI_MUTED}Stopping Web3signer...${NC}"
-                    cd ~/web3signer && docker compose stop web3signer
+                    cd ~/web3signer && docker compose down
                     echo -e "${GREEN}✓ Web3signer stopped${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
                     press_enter
                     ;;
                 "View logs")
@@ -241,8 +249,16 @@ manage_web3signer_menu() {
 # Manage Vero submenu
 manage_vero_menu() {
     while true; do
+        # Check Vero status dynamically
+        local vero_status=""
+        if cd ~/vero 2>/dev/null && docker compose ps | grep -q "vero.*running"; then
+            vero_status="Stop Vero"
+        else
+            vero_status="Start Vero"
+        fi
+        
         local vero_options=(
-            "Start/Stop Vero"
+            "$vero_status"
             "View logs"
             "Manage beacon endpoints"
             "Update fee recipient"
@@ -255,16 +271,33 @@ manage_vero_menu() {
             local selected_option="${vero_options[$selection]}"
             
             case "$selected_option" in
+                "Start Vero")
+                    echo -e "${UI_MUTED}Starting Vero...${NC}"
+                    cd ~/vero && docker compose up -d
+                    echo -e "${GREEN}✓ Vero started${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+                    press_enter
+                    ;;
+                "Stop Vero")
+                    echo -e "${UI_MUTED}Stopping Vero...${NC}"
+                    cd ~/vero && docker compose down
+                    echo -e "${GREEN}✓ Vero stopped${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                    press_enter
+                    ;;
                 "Start/Stop Vero")
-                    # Check if Vero is running
+                    # Legacy fallback - check status and toggle
                     if cd ~/vero && docker compose ps | grep -q "vero.*running"; then
                         echo -e "${UI_MUTED}Stopping Vero...${NC}"
-                        docker compose stop vero
+                        docker compose down
                         echo -e "${GREEN}✓ Vero stopped${NC}"
                     else
                         echo -e "${UI_MUTED}Starting Vero...${NC}"
                         docker compose up -d
                         echo -e "${GREEN}✓ Vero started${NC}"
+                        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
                     fi
                     press_enter
                     ;;
@@ -328,8 +361,10 @@ update_vero_fee_recipient() {
     echo
     
     if fancy_confirm "Restart Vero now?" "y"; then
-        cd ~/vero && docker compose restart vero
+        cd ~/vero && docker compose down vero && docker compose up -d vero
         echo -e "${GREEN}✓ Vero restarted with new fee recipient${NC}"
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
         
         # Refresh dashboard cache to show updated status  
         [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard

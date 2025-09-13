@@ -120,12 +120,12 @@ interactive_key_import() {
                             echo "✓ Key import completed successfully!"
                             echo
                             echo "Restarting Web3signer to recognize new keys..."
-                            docker compose restart web3signer > /dev/null 2>&1
+                            docker compose down web3signer && docker compose up -d web3signer
                             echo "✓ Web3signer restarted"
                             
                             echo "Refreshing dashboard..."
                             sleep 2  # Give web3signer time to start
-                            [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+                            [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
                             echo "✓ Dashboard refreshed with updated key count"
                             echo
                             echo "Return to main menu?"
@@ -432,7 +432,7 @@ install_web3signer() {
     # Force refresh dashboard to show the new web3signer service
     echo -e "${UI_MUTED}Refreshing dashboard...${NC}"
     if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
         echo -e "${GREEN}✓ Dashboard updated${NC}"
     fi
     echo
@@ -440,7 +440,7 @@ install_web3signer() {
     # Sync Grafana dashboards if monitoring is installed
     if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Syncing Grafana dashboards...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" && sync_grafana_dashboards > /dev/null 2>&1
+        source "${NODEBOI_LIB}/monitoring.sh" && sync_dashboards "$HOME/monitoring/grafana/dashboards"
         echo -e "${GREEN}✓ Grafana dashboards updated${NC}"
         echo
     fi
@@ -703,10 +703,18 @@ Fee recipient address:" \
     echo -e "${UI_MUTED}Fee recipient: ${fee_recipient}${NC}"
     echo
     
+    # Mark installation as successful before dashboard sync
+    installation_success=true
+    
+    # Disable error traps - installation completed successfully
+    set +eE
+    set +o pipefail
+    trap - ERR INT TERM
+    
     # Sync Grafana dashboards if monitoring is installed
     if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Syncing Grafana dashboards...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" && sync_grafana_dashboards > /dev/null 2>&1
+        source "${NODEBOI_LIB}/monitoring.sh" && sync_dashboards "$HOME/monitoring/grafana/dashboards"
         echo -e "${GREEN}✓ Grafana dashboards updated${NC}"
     fi
     
@@ -1201,6 +1209,8 @@ create_vero_env_file() {
             beacon_client="lodestar"
         fi
         
+        # CRITICAL FIX: Always use port 5052 for internal container communication
+        # All consensus clients expose their REST API on port 5052 internally
         if [[ -z "$beacon_urls" ]]; then
             beacon_urls="http://${ethnode}-${beacon_client}:5052"
         else
@@ -1441,7 +1451,7 @@ remove_vero() {
     if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Updating service connections...${NC}"
         source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
+        docker_intelligent_connecting_kontainer_system --auto
     fi
     
     # Refresh dashboard cache to show updated status
@@ -1550,7 +1560,7 @@ remove_web3signer() {
     # Force refresh dashboard to remove the web3signer service
     echo -e "${UI_MUTED}Updating dashboard...${NC}"
     if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
+        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
         echo -e "${GREEN}✓ Dashboard updated${NC}"
     fi
     echo
@@ -1559,7 +1569,7 @@ remove_web3signer() {
     if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Updating service connections...${NC}"
         source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
+        docker_intelligent_connecting_kontainer_system --auto
     fi
     
     # Refresh dashboard cache to show updated status

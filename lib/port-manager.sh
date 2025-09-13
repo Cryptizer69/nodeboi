@@ -45,14 +45,15 @@ get_all_used_ports() {
         used_ports+=$(netstat -tuln 2>/dev/null | awk '/LISTEN/ {print $4}' | grep -oE '[0-9]+$' | sort -u | tr '\n' ' ')
     fi
 
-    # Get Docker container ports (running and stopped)
+    # Get Docker container ports (running and stopped) - extract only HOST ports
     local docker_ports=$(docker ps -a --format "table {{.Ports}}" 2>/dev/null | tail -n +2)
 
-    # Extract individual ports and ranges
-    used_ports+=" $(echo "$docker_ports" | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
+    # Extract only host ports (before -> or standalone ports), not container ports (after ->)
+    # Use sed to remove everything after -> first, then extract ports
+    used_ports+=" $(echo "$docker_ports" | sed 's/->[^,]*//g' | grep -oE '(127\.0\.0\.1:|0\.0\.0\.0:)?[0-9]+(-[0-9]+)?' | grep -oE '[0-9]+(-[0-9]+)?' | sort -u | tr '\n' ' ')"
     
-    # Handle port ranges like 30304-30305
-    local ranges=$(echo "$docker_ports" | grep -oE '[0-9]+-[0-9]+' || true)
+    # Handle port ranges like 30304-30305 from the extracted host ports
+    local ranges=$(echo "$docker_ports" | sed 's/->[^,]*//g' | grep -oE '(127\.0\.0\.1:|0\.0\.0\.0:)?[0-9]+-[0-9]+' | grep -oE '[0-9]+-[0-9]+' || true)
     if [[ -n "$ranges" ]]; then
         while IFS= read -r range; do
             local start=$(echo "$range" | cut -d'-' -f1)
@@ -145,13 +146,12 @@ allocate_service_ports() {
     
     read -r range_start range_end <<< "$(parse_port_range "$range")"
     
-    # Allocate ports
+    # Allocate ports with intelligent reuse - find lowest available ports first
     local allocated_ports=()
-    local current_port=$range_start
     
-    while [[ ${#allocated_ports[@]} -lt $port_count && $current_port -le $range_end ]]; do
-        if [[ "$consecutive" == "true" ]]; then
-            # Need consecutive ports
+    if [[ "$consecutive" == "true" ]]; then
+        # Need consecutive ports - find the first available block
+        for ((current_port=range_start; current_port+port_count-1 <= range_end; current_port+=increment)); do
             local consecutive_available=true
             for ((i=0; i<port_count; i++)); do
                 if ! is_port_available $((current_port + i)) "$used_ports_cache"; then
@@ -165,19 +165,18 @@ allocate_service_ports() {
                     allocated_ports+=($((current_port + i)))
                 done
                 break
-            else
-                current_port=$((current_port + increment))
             fi
-        else
-            # Individual ports with increment
+        done
+    else
+        # Individual ports - find lowest available ports in range
+        for ((current_port=range_start; current_port <= range_end && ${#allocated_ports[@]} < port_count; current_port+=increment)); do
             if is_port_available "$current_port" "$used_ports_cache"; then
                 allocated_ports+=("$current_port")
                 # Update cache to prevent double allocation in same call
                 used_ports_cache+=" $current_port"
             fi
-            current_port=$((current_port + increment))
-        fi
-    done
+        done
+    fi
     
     # Check if we got all required ports
     if [[ ${#allocated_ports[@]} -ne $port_count ]]; then

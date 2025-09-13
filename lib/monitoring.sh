@@ -4,6 +4,349 @@
 # Load dependencies
 [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh"
 
+# Process dashboard template by replacing template variables
+process_dashboard_template() {
+    local template_file="$1"
+    local output_file="$2"
+    
+    if [[ -f "$template_file" ]]; then
+        # Determine dynamic tags and titles based on instance
+        local node_name=""
+        local client_type=""
+        local client_name=""
+        local dynamic_tags=""
+        local dynamic_title=""
+        
+        if [[ "$template_file" == *"besu"* ]]; then
+            node_name="ethnode2"
+            client_type="execution"
+            client_name="Besu"
+            dynamic_tags="\"ethnode2\", \"execution\", \"besu\""
+            dynamic_title="ethnode2-Besu"
+        elif [[ "$template_file" == *"reth"* ]]; then
+            node_name="ethnode1"
+            client_type="execution"
+            client_name="Reth"
+            dynamic_tags="\"ethnode1\", \"execution\", \"reth\""
+            dynamic_title="ethnode1-Reth"
+        elif [[ "$template_file" == *"teku"* ]]; then
+            node_name="ethnode1"
+            client_type="consensus"
+            client_name="Teku"
+            dynamic_tags="\"ethnode1\", \"consensus\", \"teku\""
+            dynamic_title="ethnode1-Teku"
+        elif [[ "$template_file" == *"grandine"* ]]; then
+            node_name="ethnode2"
+            client_type="consensus"
+            client_name="Grandine"
+            dynamic_tags="\"ethnode2\", \"consensus\", \"grandine\""
+            dynamic_title="ethnode2-Grandine"
+        elif [[ "$template_file" == *"vero"* ]]; then
+            node_name="validators"
+            client_type="validator"
+            client_name="Vero"
+            dynamic_tags="\"validators\", \"validator\", \"vero\""
+            dynamic_title="validators-Vero"
+        elif [[ "$template_file" == *"nethermind"* ]]; then
+            node_name="ethnode1"  # Will be detected dynamically below
+            client_type="execution"
+            client_name="Nethermind"
+            dynamic_tags="\"ethnode1\", \"execution\", \"nethermind\""
+            dynamic_title="ethnode1-Nethermind"
+        elif [[ "$template_file" == *"lodestar"* ]]; then
+            node_name="ethnode1"  # Will be detected dynamically below
+            client_type="consensus"
+            client_name="Lodestar"
+            dynamic_tags="\"ethnode1\", \"consensus\", \"lodestar\""
+            dynamic_title="ethnode1-Lodestar"
+        elif [[ "$template_file" == *"lighthouse"* ]]; then
+            node_name="ethnode1"  # Will be detected dynamically below
+            client_type="consensus"
+            client_name="Lighthouse"
+            dynamic_tags="\"ethnode1\", \"consensus\", \"lighthouse\""
+            dynamic_title="ethnode1-Lighthouse"
+        elif [[ "$template_file" == *"node-exporter"* ]]; then
+            node_name="system"
+            client_type="monitoring"
+            client_name="System metrics"
+            dynamic_tags="\"system\", \"monitoring\", \"node-exporter\""
+            dynamic_title="System metrics"
+        fi
+        
+        # Dynamic node detection - find which ethnode is actually running this client
+        if [[ "$client_type" == "execution" || "$client_type" == "consensus" ]] && [[ "$template_file" != *"besu"* && "$template_file" != *"grandine"* ]]; then
+            for ethnode_dir in "$HOME"/ethnode*; do
+                if [[ -d "$ethnode_dir" && -f "$ethnode_dir/.env" ]]; then
+                    local compose_file=$(grep "COMPOSE_FILE=" "$ethnode_dir/.env" 2>/dev/null | cut -d'=' -f2)
+                    local actual_node_name=$(basename "$ethnode_dir")
+                    if [[ "$compose_file" == *"${client_name,,}"* ]]; then
+                        node_name="$actual_node_name"
+                        dynamic_tags="\"$actual_node_name\", \"$client_type\", \"${client_name,,}\""
+                        dynamic_title="$actual_node_name-$client_name"
+                        break
+                    fi
+                fi
+            done
+        fi
+        
+        # Replace template variables with actual datasource name and fix variable queries
+        # Hardcode instance values directly in queries - bypass template variables entirely
+        if [[ "$template_file" == *"besu"* ]]; then
+            # For Besu dashboard, hardcode ethnode2-besu:6060 in all queries
+            sed -e 's/\${DS_PROMETHEUS}/prometheus/g' \
+                -e 's/"uid": "prometheus"/"uid": ""/g' \
+                -e 's/"uid": "\${datasource}"/"uid": ""/g' \
+                -e 's/\$system/ethnode2-besu:6060/g' \
+                -e 's/"query_result(ethereum_blockchain_height or besu_blockchain_height)"/"label_values(ethereum_blockchain_height,instance)"/g' \
+                -e 's/"query_result(beacon_slot)"/"label_values(beacon_slot,instance)"/g' \
+                "$template_file" > "$output_file.tmp" 2>/dev/null || true
+        elif [[ "$template_file" == *"reth"* ]]; then
+            # For Reth dashboard, hardcode ethnode1-reth:9001 in all queries
+            sed -e 's/\${DS_PROMETHEUS}/prometheus/g' \
+                -e 's/"uid": "prometheus"/"uid": ""/g' \
+                -e 's/"uid": "\${datasource}"/"uid": ""/g' \
+                -e 's/\$instance/ethnode1-reth:9001/g' \
+                -e 's/"query_result(ethereum_blockchain_height or besu_blockchain_height)"/"label_values(ethereum_blockchain_height,instance)"/g' \
+                -e 's/"query_result(beacon_slot)"/"label_values(beacon_slot,instance)"/g' \
+                "$template_file" > "$output_file.tmp" 2>/dev/null || true
+        elif [[ "$template_file" == *"teku"* ]]; then
+            # For Teku dashboard, hardcode ethnode1-teku:8008 in all queries
+            sed -e 's/\${DS_PROMETHEUS}/prometheus/g' \
+                -e 's/"uid": "prometheus"/"uid": ""/g' \
+                -e 's/"uid": "\${datasource}"/"uid": ""/g' \
+                -e 's/{instance="\$system"}/{instance="ethnode1-teku:8008"}/g' \
+                -e 's/"query_result(ethereum_blockchain_height or besu_blockchain_height)"/"label_values(ethereum_blockchain_height,instance)"/g' \
+                -e 's/"query_result(beacon_slot)"/"label_values(beacon_slot,instance)"/g' \
+                "$template_file" > "$output_file.tmp" 2>/dev/null || true
+        else
+            # For other dashboards, use default processing
+            sed -e 's/\${DS_PROMETHEUS}/prometheus/g' \
+                -e 's/"uid": "prometheus"/"uid": ""/g' \
+                -e 's/"uid": "\${datasource}"/"uid": ""/g' \
+                -e 's/"query_result(ethereum_blockchain_height or besu_blockchain_height)"/"label_values(ethereum_blockchain_height,instance)"/g' \
+                -e 's/"query_result(beacon_slot)"/"label_values(beacon_slot,instance)"/g' \
+                "$template_file" > "$output_file.tmp" 2>/dev/null || true
+        fi
+        
+        # Update tags and title if dynamic values are set
+        if [[ -n "$dynamic_tags" && -f "$output_file.tmp" ]]; then
+            # Use jq to reliably update JSON tags and title
+            jq --argjson tags "[$dynamic_tags]" --arg title "$dynamic_title" '.tags = $tags | .title = $title' "$output_file.tmp" > "$output_file.tmp2" && mv "$output_file.tmp2" "$output_file.tmp" 2>/dev/null || true
+        elif [[ -f "$output_file.tmp" ]]; then
+            # Clear existing tags if no dynamic tags specified
+            jq '.tags = []' "$output_file.tmp" > "$output_file.tmp2" && mv "$output_file.tmp2" "$output_file.tmp" 2>/dev/null || true
+        fi
+        
+        # Move temp file to final output
+        mv "$output_file.tmp" "$output_file" 2>/dev/null || true
+    fi
+}
+
+# Clean up old dashboards and sync with running services
+sync_dashboards_with_services() {
+    local dashboards_dir="$1"
+    shift
+    local networks=("$@")
+    
+    # Clean up existing dashboards first
+    rm -f "$dashboards_dir"/*.json 2>/dev/null || true
+    
+    # Always copy node-exporter dashboard (system monitoring)
+    if [[ -f "$HOME/.nodeboi/templates/system/node-exporter-full.json" ]]; then
+        process_dashboard_template "$HOME/.nodeboi/templates/system/node-exporter-full.json" "$dashboards_dir/node-exporter-full.json"
+    fi
+    
+    # Detect active services across all selected networks
+    for network in "${networks[@]}"; do
+        detect_and_copy_client_dashboards "$dashboards_dir" "$network"
+    done
+    
+    # Copy vero dashboard if vero is running
+    if [[ -d "$HOME/vero" ]] && (cd "$HOME/vero" && docker compose ps --services --filter "status=running" | grep -q "vero"); then
+        if [[ -f "$HOME/.nodeboi/templates/validators/vero-detailed.json" ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/validators/vero-detailed.json" "$dashboards_dir/vero-detailed.json"
+            echo "  ✓ vero dashboard created"
+        fi
+    fi
+    
+    # Also regenerate Prometheus configuration to match current services
+    local monitoring_dir=$(dirname "$dashboards_dir")
+    regenerate_prometheus_config "$monitoring_dir" "${networks[@]}"
+    
+    echo "Dashboard and Prometheus sync complete"
+}
+
+# Regenerate Prometheus configuration to match current running services
+regenerate_prometheus_config() {
+    local monitoring_dir="$1"
+    shift
+    local networks=("$@")
+    
+    echo "Regenerating Prometheus configuration..."
+    
+    # Generate new Prometheus targets
+    local prometheus_targets=$(generate_prometheus_targets "${networks[@]}")
+    
+    # Create new prometheus.yml
+    cat > "$monitoring_dir/prometheus.yml" <<EOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+${prometheus_targets}
+EOF
+    
+    echo "  ✓ prometheus.yml regenerated"
+}
+
+# Legacy function name for compatibility
+copy_relevant_dashboards() {
+    sync_dashboards_with_services "$@"
+}
+
+# Detect client types and copy corresponding dashboards
+detect_and_copy_client_dashboards() {
+    local dashboards_dir="$1"
+    local network="$2"
+    
+    # Check for ethnode directories
+    for ethnode_dir in "$HOME"/ethnode*; do
+        if [[ -d "$ethnode_dir" && -f "$ethnode_dir/.env" ]]; then
+            # For nodeboi-net, include ALL ethnodes regardless of their individual network
+            # For specific networks, match the network name
+            if [[ "$network" == "nodeboi-net" ]]; then
+                # Always copy dashboards for nodeboi-net (includes all ethnodes) if running
+                local compose_file="$ethnode_dir/compose.yml"
+                if [[ ! -f "$compose_file" ]]; then
+                    compose_file="$ethnode_dir/docker-compose.yml"
+                fi
+                if [[ -f "$compose_file" ]] && (cd "$ethnode_dir" && docker compose ps --services --filter "status=running" | grep -q .); then
+                    copy_dashboards_for_ethnode "$dashboards_dir" "$ethnode_dir"
+                fi
+            else
+                # Check if this ethnode is on the target network
+                local ethnode_network=$(grep "^NETWORK=" "$ethnode_dir/.env" | cut -d'=' -f2)
+                if [[ "$ethnode_network" == "$network" ]]; then
+                    # Check if ethnode is running (try both compose.yml and docker-compose.yml)
+                    local compose_file="$ethnode_dir/compose.yml"
+                    if [[ ! -f "$compose_file" ]]; then
+                        compose_file="$ethnode_dir/docker-compose.yml"
+                    fi
+                    if [[ -f "$compose_file" ]] && (cd "$ethnode_dir" && docker compose ps --services --filter "status=running" | grep -q .); then
+                        copy_dashboards_for_ethnode "$dashboards_dir" "$ethnode_dir"
+                    fi
+                fi
+            fi
+        fi
+    done
+}
+
+# Copy dashboards for a specific ethnode based on its client configuration
+copy_dashboards_for_ethnode() {
+    local dashboards_dir="$1"
+    local ethnode_dir="$2"
+    
+    if [[ -f "$ethnode_dir/.env" ]]; then
+        # Parse COMPOSE_FILE to detect clients (format: compose.yml:client1.yml:client2.yml)
+        local compose_file=$(grep "^COMPOSE_FILE=" "$ethnode_dir/.env" | cut -d'=' -f2)
+        local ethnode_name=$(basename "$ethnode_dir")
+        
+        # Detect execution clients
+        if [[ "$compose_file" == *"reth"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/execution/reth-overview.json" "$dashboards_dir/reth-overview.json"
+            echo "  ✓ ${ethnode_name}-reth dashboard created"
+        fi
+        if [[ "$compose_file" == *"besu"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/execution/besu-overview.json" "$dashboards_dir/besu-overview.json"
+            echo "  ✓ ${ethnode_name}-besu dashboard created"
+        fi
+        if [[ "$compose_file" == *"nethermind"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/execution/nethermind-overview.json" "$dashboards_dir/nethermind-overview.json"
+            echo "  ✓ ${ethnode_name}-nethermind dashboard created"
+        fi
+        
+        # Detect consensus clients
+        if [[ "$compose_file" == *"teku"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/consensus/teku-overview.json" "$dashboards_dir/teku-overview.json"
+            echo "  ✓ ${ethnode_name}-teku dashboard created"
+        fi
+        if [[ "$compose_file" == *"lighthouse"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/consensus/lighthouse-overview.json" "$dashboards_dir/lighthouse-overview.json"
+            process_dashboard_template "$HOME/.nodeboi/templates/consensus/lighthouse-summary.json" "$dashboards_dir/lighthouse-summary.json"
+            echo "  ✓ ${ethnode_name}-lighthouse dashboard created"
+        fi
+        if [[ "$compose_file" == *"grandine"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/consensus/grandine-overview.json" "$dashboards_dir/grandine-overview.json"
+            echo "  ✓ ${ethnode_name}-grandine dashboard created"
+        fi
+        if [[ "$compose_file" == *"lodestar"* ]]; then
+            process_dashboard_template "$HOME/.nodeboi/templates/consensus/lodestar-summary.json" "$dashboards_dir/lodestar-summary.json"
+            echo "  ✓ ${ethnode_name}-lodestar dashboard created"
+        fi
+    fi
+}
+
+# Refresh dashboards and Prometheus config for existing monitoring installation
+refresh_monitoring_dashboards() {
+    local monitoring_dir="$HOME/monitoring"
+    
+    if [[ -d "$monitoring_dir" && -f "$monitoring_dir/docker-compose.yml" ]]; then
+        echo -e "${UI_MUTED}Refreshing monitoring configuration...${NC}"
+        
+        # Regenerate Prometheus configuration with current ethnodes
+        regenerate_prometheus_config
+        
+        # Clear existing dashboards
+        rm -f "$monitoring_dir/grafana/dashboards"/*.json 2>/dev/null || true
+        
+        # Detect current ethnode networks
+        local networks=("nodeboi-net")  # Always use nodeboi-net for auto-discovery
+        
+        # Copy relevant dashboards
+        copy_relevant_dashboards "$monitoring_dir/grafana/dashboards" "${networks[@]}"
+        
+        # Restart services to pick up new config
+        echo -e "${UI_MUTED}Restarting monitoring services...${NC}"
+        cd "$monitoring_dir" && docker compose restart prometheus grafana
+        cd "$HOME/.nodeboi"
+    fi
+}
+
+# Regenerate Prometheus configuration for existing installation
+regenerate_prometheus_config() {
+    local monitoring_dir="$HOME/monitoring"
+    local prometheus_config="$monitoring_dir/prometheus.yml"
+    
+    if [[ ! -d "$monitoring_dir" ]]; then
+        return 1
+    fi
+    
+    # Generate new targets
+    local networks=("nodeboi-net")  # Use nodeboi-net for auto-discovery
+    local prometheus_targets=$(generate_prometheus_targets "${networks[@]}")
+    
+    # Create new prometheus.yml
+    cat > "$prometheus_config" << EOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+${prometheus_targets}
+EOF
+    
+    return 0
+}
+
 # Discover NODEBOI Docker networks
 discover_nodeboi_networks() {
     local networks=()
@@ -182,6 +525,7 @@ EOF
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - nodeboi-net
 EOF
@@ -232,9 +576,9 @@ volumes:
     name: monitoring_grafana_data
 
 networks:
-  monitoring:
-    name: monitoring-net
-    driver: bridge
+  nodeboi-net:
+    external: true
+    name: nodeboi-net
 EOF
 
             # Add external network definitions
@@ -258,10 +602,11 @@ generate_prometheus_targets() {
     local selected_networks=("$@")
     local prometheus_configs=""
     
-    # Always include node-exporter
+    # Get the monitoring name from .env
+    local monitoring_name="${MONITORING_NAME:-monitoring}"
     prometheus_configs+="  - job_name: 'node-exporter'
     static_configs:
-      - targets: ['node-exporter:9100']
+      - targets: ['${monitoring_name}-node-exporter:9100']
 
 "
     
@@ -278,6 +623,15 @@ generate_prometheus_targets() {
                     generate_targets_for_node "$node_name" "$node_dir" prometheus_configs
                 fi
             done
+            
+            # ADD: Check for Vero and add it to targets
+            if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+                prometheus_configs+="  - job_name: 'vero'
+    static_configs:
+      - targets: ['vero:9010']
+
+"
+            fi
         else
             # Legacy individual network support
             local node_name="${network%-net}"
@@ -289,6 +643,7 @@ generate_prometheus_targets() {
         fi
     done
     
+    
     echo "$prometheus_configs"
 }
 
@@ -299,28 +654,62 @@ generate_targets_for_node() {
     local -n configs_ref="$3"
     
     if [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
-        # Parse client types from compose file
+        # Parse client types from compose file directly
         local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2)
-        local clients=$(detect_node_clients "$compose_file")
-        local exec_client="${clients%:*}"
-        local cons_client="${clients#*:}"
+        
+        # Detect execution client
+        local exec_client=""
+        if [[ "$compose_file" == *"reth"* ]]; then
+            exec_client="reth"
+        elif [[ "$compose_file" == *"besu"* ]]; then
+            exec_client="besu"
+        elif [[ "$compose_file" == *"nethermind"* ]]; then
+            exec_client="nethermind"
+        fi
+        
+        # Detect consensus client
+        local cons_client=""
+        if [[ "$compose_file" == *"teku"* ]]; then
+            cons_client="teku"
+        elif [[ "$compose_file" == *"grandine"* ]]; then
+            cons_client="grandine"
+        elif [[ "$compose_file" == *"lodestar"* ]]; then
+            cons_client="lodestar"
+        elif [[ "$compose_file" == *"lighthouse"* ]]; then
+            cons_client="lighthouse"
+        fi
         
         # Get metrics ports from .env
         if [[ "$exec_client" == "reth" ]]; then
-            # Reth uses port 9001 internally, mapped to METRICS_PORT externally
-            local exec_port=$(grep "^METRICS_PORT=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//')
-            [[ -z "$exec_port" ]] && exec_port="9001"
-            
             configs_ref+="  - job_name: '${node_name}-reth'
     static_configs:
-      - targets: ['${node_name}-reth:9001']  # Internal port
+      - targets: ['${node_name}-reth:9001']
+        labels:
+          node: '${node_name}'
+          client: 'reth'
+          instance: '${node_name}-reth:9001'
 
 "
-        elif [[ "$exec_client" == "besu" || "$exec_client" == "nethermind" ]]; then
-            # Besu/Nethermind use port 6060
-            configs_ref+="  - job_name: '${node_name}-${exec_client}'
+        elif [[ "$exec_client" == "besu" ]]; then
+            # Add proper labels for Besu dashboard compatibility
+            configs_ref+="  - job_name: '${node_name}-besu'
     static_configs:
-      - targets: ['${node_name}-${exec_client}:6060']
+      - targets: ['${node_name}-besu:6060']
+        labels:
+          node: '${node_name}'
+          client: 'besu'
+          instance: '${node_name}-besu:6060'
+          system: '${node_name}-besu:6060'  # For dashboard compatibility
+
+"
+        elif [[ "$exec_client" == "nethermind" ]]; then
+            configs_ref+="  - job_name: '${node_name}-nethermind'
+    static_configs:
+      - targets: ['${node_name}-nethermind:6060']
+        labels:
+          node: '${node_name}'
+          client: 'nethermind'
+          instance: '${node_name}-nethermind:6060'
 
 "
         fi
@@ -330,24 +719,15 @@ generate_targets_for_node() {
             configs_ref+="  - job_name: '${node_name}-${cons_client}'
     static_configs:
       - targets: ['${node_name}-${cons_client}:8008']
+        labels:
+          node: '${node_name}'
+          client: '${cons_client}'
+          instance: '${node_name}-${cons_client}:8008'
 
 "
-        fi
-        
-        # Check for MEV-boost
-        if docker ps --format "{{.Names}}" | grep -q "^${node_name}-mevboost$"; then
-            local mevboost_port=$(grep "^MEVBOOST_PORT=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//')
-            if [[ -n "$mevboost_port" ]]; then
-                configs_ref+="  - job_name: '${node_name}-mevboost'
-    static_configs:
-      - targets: ['${node_name}-mevboost:${mevboost_port}']
-
-"
-            fi
         fi
     fi
 }
-
 # Install monitoring
 install_monitoring_stack() {
     # Enable strict error handling for atomic installation
@@ -388,7 +768,6 @@ install_monitoring_stack() {
         
         # Remove volumes and networks
         docker volume ls -q --filter "name=monitoring" | xargs -r docker volume rm -f 2>/dev/null || true
-        docker network rm monitoring-net 2>/dev/null || true
         
         # Remove staging directory
         [[ -n "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
@@ -596,12 +975,8 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
+      - nodeboi-net
 EOF
-
-    # Add selected networks to prometheus service (avoid duplicates)
-    for network in "${selected_networks[@]}"; do
-        echo "      - ${network}" >> "$staging_dir/compose.yml"
-    done
 
     # Continue with rest of compose.yml
     cat >> "$staging_dir/compose.yml" <<'EOF'
@@ -625,8 +1000,9 @@ EOF
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
-      - monitoring
+      - nodeboi-net
     depends_on:
       - prometheus
     security_opt:
@@ -649,7 +1025,7 @@ EOF
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     networks:
-      - monitoring
+      - nodeboi-net
     security_opt:
       - no-new-privileges:true
     <<: *logging
@@ -661,19 +1037,12 @@ volumes:
     name: ${MONITORING_NAME}_grafana_data
 
 networks:
-  monitoring:
-    name: monitoring-net
-    driver: bridge
+  nodeboi-net:
+    external: true
+    name: nodeboi-net
 EOF
     
-    # Add external networks to compose.yml
-    for network in "${selected_networks[@]}"; do
-        cat >> "$staging_dir/compose.yml" <<EOF
-  ${network}:
-    external: true
-    name: ${network}
-EOF
-    done
+    # nodeboi-net is already defined above, no additional networks needed
 
     # Step 8: Create Prometheus configuration
     echo -e "${UI_MUTED}Generating Prometheus configuration...${NC}"
@@ -694,17 +1063,42 @@ EOF
     local prometheus_targets=$(generate_prometheus_targets "${selected_networks[@]}")
     echo "$prometheus_targets" >> "$staging_dir/prometheus.yml"
     
-    # Step 9: Create Grafana datasource configuration
+    # Step 9: Create Grafana provisioning configuration
+    # Create datasource configuration
     cat > "$staging_dir/grafana/provisioning/datasources/prometheus.yml" <<EOF
 apiVersion: 1
 
 datasources:
-  - name: Prometheus
+  - name: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
 EOF
+    
+    # Create dashboard provisioning directories
+    mkdir -p "$staging_dir/grafana/provisioning/dashboards"
+    mkdir -p "$staging_dir/grafana/dashboards"
+    
+    # Create dashboard provisioning configuration
+    cat > "$staging_dir/grafana/provisioning/dashboards/dashboards.yml" <<EOF
+apiVersion: 1
+
+providers:
+  - name: 'default'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+EOF
+    
+    # Copy relevant dashboard templates based on active services
+    echo -e "${UI_MUTED}Copying dashboard templates for active services...${NC}"
+    copy_relevant_dashboards "$staging_dir/grafana/dashboards" "${selected_networks[@]}"
     
     # Step 10: Set permissions
     echo -e "${UI_MUTED}Setting permissions...${NC}"
@@ -875,7 +1269,7 @@ change_monitoring_access_level() {
         sed -i "s/^BIND_IP=.*/BIND_IP=${new_ip}/" "$HOME/monitoring/.env"
         echo -e "${UI_MUTED}Restarting monitoring...${NC}"
         cd "$HOME/monitoring"
-        docker compose restart
+        docker compose down && docker compose up -d
         echo -e "${GREEN}✓ Access level changed to: $new_ip${NC}"
     fi
     
@@ -979,9 +1373,9 @@ update_monitoring_networks() {
     # Add networks section (use sudo since files are owned by monitoring user)
     sudo tee -a compose.yml > /dev/null <<EOF
 networks:
-  monitoring:
-    name: monitoring-net
-    driver: bridge
+  nodeboi-net:
+    external: true
+    name: nodeboi-net
 EOF
     
     for network in "${selected_networks[@]}"; do
@@ -1034,9 +1428,6 @@ remove_monitoring_stack() {
     
     echo -e "${UI_MUTED}Stopping monitoring containers...${NC}"
     cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
-    
-    echo -e "${UI_MUTED}Removing monitoring network...${NC}"
-    docker network rm monitoring-net 2>/dev/null || true
     
     echo -e "${UI_MUTED}Removing monitoring files...${NC}"
     # Use sudo for files that might be owned by the old monitoring user
@@ -1308,8 +1699,29 @@ apply_network_connections() {
 # Monitoring management menu
 manage_monitoring_menu() {
     while true; do
+        # Check monitoring status dynamically
+        local monitoring_status=""
+        if cd ~/monitoring 2>/dev/null; then
+            local running_services=$(docker compose ps --services --filter status=running 2>/dev/null)
+            local all_running=true
+            for service in prometheus grafana node-exporter; do
+                if ! echo "$running_services" | grep -q "$service"; then
+                    all_running=false
+                    break
+                fi
+            done
+            
+            if [[ "$all_running" == true ]]; then
+                monitoring_status="Stop monitoring"
+            else
+                monitoring_status="Start monitoring"
+            fi
+        else
+            monitoring_status="Start monitoring"
+        fi
+        
         local menu_options=(
-            "Start/stop monitoring"
+            "$monitoring_status"
             "See Grafana login information"
             "View logs"
             "Update monitoring"
@@ -1319,13 +1731,39 @@ manage_monitoring_menu() {
         
         local selection
         if selection=$(fancy_select_menu "Manage Monitoring" "${menu_options[@]}"); then
-            case $selection in
-                0) manage_monitoring_state ;;
-                1) view_grafana_credentials ;;
-                2) view_monitoring_logs ;;
-                3) update_monitoring_services ;;
-                4) remove_monitoring_stack ;;
-                5) return ;;
+            case "${menu_options[$selection]}" in
+                "Start monitoring")
+                    echo -e "${UI_MUTED}Starting monitoring services...${NC}"
+                    cd ~/monitoring && docker compose up -d
+                    echo -e "${GREEN}✓ Monitoring services started${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+                    press_enter
+                    ;;
+                "Stop monitoring")
+                    echo -e "${UI_MUTED}Stopping monitoring services...${NC}"
+                    cd ~/monitoring && docker compose down
+                    echo -e "${GREEN}✓ Monitoring services stopped${NC}"
+                    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+                    press_enter
+                    ;;
+                "Start/stop monitoring")
+                    manage_monitoring_state
+                    ;;
+                "See Grafana login information")
+                    view_grafana_credentials
+                    ;;
+                "View logs")
+                    view_monitoring_logs
+                    ;;
+                "Update monitoring")
+                    update_monitoring_services
+                    ;;
+                "Remove monitoring")
+                    remove_monitoring_stack
+                    ;;
+                "Back to main menu")
+                    return
+                    ;;
             esac
         else
             return
@@ -1773,7 +2211,7 @@ manage_monitoring_state() {
                 ;;
             "Restart all services")
                 echo -e "${UI_MUTED}Restarting monitoring services...${NC}"
-                docker compose restart
+                docker compose down && docker compose up -d
                 echo -e "${GREEN}🔄 Services restarted${NC}"
                 ;;
             "Back to monitoring menu")
@@ -1861,32 +2299,8 @@ view_monitoring_logs() {
 }
 
 #============================================================================
-# Dynamic Grafana Dashboard Management
+# Unified Dashboard Management - Template-based Only
 #============================================================================
-
-# Dashboard mapping - service to Grafana.com dashboard ID or template file
-declare -gA GRAFANA_DASHBOARDS=(
-    # Always loaded
-    ["node-exporter"]="template:system/node-exporter-full.json"
-    
-    # Execution clients
-    ["besu"]="10273"
-    ["reth"]="template:execution/reth-overview.json"
-    ["nethermind"]="template:execution/nethermind-overview.json"
-    
-    # Consensus clients  
-    ["grandine"]="template:consensus/grandine-overview.json"
-    ["lodestar"]="template:consensus/lodestar-summary.json"
-    ["teku"]="template:consensus/teku-overview.json"
-    ["lighthouse"]="template:consensus/lighthouse-overview.json"
-    
-    # Validators - use templates
-    ["vero"]="template:validators/vero-detailed.json"
-    ["web3signer"]="custom"
-    
-    # Monitoring
-    ["prometheus"]="3662"
-)
 
 # Get currently installed services
 get_installed_services() {
@@ -1934,182 +2348,74 @@ get_installed_services() {
     printf "%s\n" "${services[@]}" | sort -u
 }
 
-# Download dashboard JSON from Grafana.com or copy from template
-download_dashboard() {
-    local service="$1"
-    local dashboard_source="${GRAFANA_DASHBOARDS[$service]}"
-    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
-    local template_dir="$HOME/monitoring/grafana/dashboard-templates"
-    
-    [[ -z "$dashboard_source" || "$dashboard_source" == "custom" ]] && return 1
-    [[ ! -d "$dashboard_dir" ]] && mkdir -p "$dashboard_dir"
-    
-    # Handle template files
-    if [[ "$dashboard_source" == template:* ]]; then
-        local template_path="${dashboard_source#template:}"
-        local template_file="$template_dir/$template_path"
-        local filename="${service}-$(basename "$template_path")"
-        local filepath="$dashboard_dir/$filename"
-        
-        if [[ -f "$template_file" ]]; then
-            cp "$template_file" "$filepath"
-            echo "Installed $service dashboard from template"
-            return 0
-        else
-            echo "Template not found: $template_file"
-            return 1
-        fi
-    fi
-    
-    # Handle Grafana.com dashboard IDs
-    local dashboard_id="$dashboard_source"
-    local filename="${service}-${dashboard_id}.json"
-    local filepath="$dashboard_dir/$filename"
-    
-    # Skip if already exists and is recent (less than 24h old)
-    if [[ -f "$filepath" ]]; then
-        local file_age=$(( $(date +%s) - $(stat -c %Y "$filepath") ))
-        if [[ $file_age -lt 86400 ]]; then
-            return 0  # Already exists and recent
-        fi
-    fi
-    
-    # Download dashboard JSON from Grafana.com
-    if curl -s "https://grafana.com/api/dashboards/${dashboard_id}/revisions/latest/download" > "$filepath.tmp"; then
-        if [[ -s "$filepath.tmp" ]]; then
-            mv "$filepath.tmp" "$filepath"
-            echo "Downloaded $service dashboard ($dashboard_id)"
-            return 0
-        fi
-    fi
-    
-    rm -f "$filepath.tmp"
-    return 1
-}
+#============================================================================
+# Unified Grafana Dashboard Management
+#============================================================================
 
-# Remove dashboard file
-remove_dashboard() {
-    local service="$1"
-    local dashboard_id="${GRAFANA_DASHBOARDS[$service]}"
-    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
+# Sync dashboards with current services - unified approach
+sync_dashboards() {
+    local dashboard_dir="$1"
+    [[ ! -d "$dashboard_dir" ]] && return 1
     
-    [[ -z "$dashboard_id" ]] && return 1
+    echo "Syncing dashboards with current services..."
     
-    local filename="${service}-${dashboard_id}.json"
-    local filepath="$dashboard_dir/$filename"
+    # Clear existing dashboards
+    rm -f "$dashboard_dir"/*.json 2>/dev/null || true
     
-    if [[ -f "$filepath" ]]; then
-        rm -f "$filepath"
-        echo "Removed $service dashboard"
-        return 0
-    fi
-    return 1
-}
-
-# Sync dashboards with currently installed services
-sync_grafana_dashboards() {
-    [[ ! -d "$HOME/monitoring" ]] && return 1
+    # Copy dashboards based on installed services and networks using existing copy_relevant_dashboards
+    local current_networks_raw=($(discover_nodeboi_networks))
+    local network_names=()
     
-    local installed_services=($(get_installed_services))
-    local dashboard_dir="$HOME/monitoring/grafana/dashboards"
-    local restart_needed=false
-    
-    echo "Syncing Grafana dashboards..."
-    
-    # Download dashboards for installed services
-    for service in "${installed_services[@]}"; do
-        if download_dashboard "$service"; then
-            restart_needed=true
+    # Extract just the network names (before colon)
+    for network_info in "${current_networks_raw[@]}"; do
+        local network_name="${network_info%%:*}"
+        # Avoid duplicates
+        if [[ ! " ${network_names[@]} " =~ " $network_name " ]]; then
+            network_names+=("$network_name")
         fi
     done
     
-    # Remove dashboards for uninstalled services
-    if [[ -d "$dashboard_dir" ]]; then
-        for dashboard_file in "$dashboard_dir"/*.json; do
-            [[ ! -f "$dashboard_file" ]] && continue
-            
-            local basename=$(basename "$dashboard_file" .json)
-            local service_name=$(echo "$basename" | cut -d'-' -f1)
-            
-            # Check if service is still installed
-            local service_installed=false
-            for installed_service in "${installed_services[@]}"; do
-                if [[ "$service_name" == "$installed_service" ]]; then
-                    service_installed=true
-                    break
-                fi
-            done
-            
-            if [[ "$service_installed" == false ]]; then
-                rm -f "$dashboard_file"
-                echo "Removed unused $service_name dashboard"
-                restart_needed=true
-            fi
-        done
+    copy_relevant_dashboards "$dashboard_dir" "${network_names[@]}" || true
+    
+    # Also regenerate prometheus targets
+    local monitoring_dir="$HOME/monitoring"
+    if [[ -d "$monitoring_dir" ]]; then
+        echo "Updating Prometheus targets..."
+        regenerate_prometheus_config || true
     fi
     
-    # Restart Grafana to reload dashboards if changes were made
-    if [[ "$restart_needed" == true ]]; then
-        echo "Restarting Grafana to load dashboard changes..."
-        if docker ps --filter name=monitoring-grafana --filter status=running -q | grep -q .; then
-            docker restart monitoring-grafana >/dev/null 2>&1
-            echo "Grafana restarted successfully"
-        fi
-    else
-        echo "No dashboard changes needed"
-    fi
+    echo "✓ Dashboard and target sync complete"
+    return 0
 }
 
-# Old sync_monitoring_networks function removed - replaced by DICKS
-# All network management now handled by docker_intelligent_connecting_kontainer_system
-
-# Unified event-driven network sync (replaces all other network management)
+# Sync monitoring integration with current network state  
 sync_monitoring_integration() {
-    [[ ! -d "$HOME/monitoring" ]] && return 0
-    
-    local silent_mode="$1"  # Set to "silent" to suppress output
-    
-    # Discover all current networks
-    local available_networks=($(discover_nodeboi_networks | cut -d':' -f1))
-    local monitoring_dir="$HOME/monitoring"
-    
-    # Get current networks from compose.yml
-    local current_networks=()
-    if [[ -f "$monitoring_dir/compose.yml" ]]; then
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.+-net)$ ]]; then
-                local network="${BASH_REMATCH[1]}"
-                if [[ "$network" != "monitoring" ]]; then
-                    current_networks+=("$network")
-                fi
-            fi
-        done < "$monitoring_dir/compose.yml"
-    fi
-    
-    # Check if networks need updating
-    local current_sorted=($(printf "%s\n" "${current_networks[@]}" | sort | uniq))
-    local available_sorted=($(printf "%s\n" "${available_networks[@]}" | sort | uniq))
-    
-    local networks_changed=false
-    if [[ "${current_sorted[*]}" != "${available_sorted[*]}" ]]; then
-        networks_changed=true
-    fi
-    
-    # Always sync dashboards, only sync networks if changed
+    local silent_mode="${1:-normal}"
     local actions_taken=""
     
-    # Sync dashboards
-    if command -v sync_grafana_dashboards >/dev/null 2>&1; then
-        sync_grafana_dashboards >/dev/null 2>&1
-        actions_taken="dashboards"
+    # Check if monitoring is installed
+    [[ ! -d "$HOME/monitoring" ]] && return 0
+    
+    # Sync dashboards using unified system
+    sync_dashboards "$HOME/monitoring/grafana/dashboards" >/dev/null 2>&1
+    actions_taken="dashboards"
+    
+    # Sync network connections if ethnodes changed
+    local current_ethnode_networks=($(discover_nodeboi_networks))
+    local monitoring_networks_file="$HOME/monitoring/.monitoring_networks"
+    local stored_networks=""
+    
+    # Check if network configuration changed
+    if [[ -f "$monitoring_networks_file" ]]; then
+        stored_networks=$(cat "$monitoring_networks_file")
     fi
     
-    # Network changes are already applied above, just track the action
-    if [[ "$networks_changed" == true ]]; then
-        if [[ -n "$actions_taken" ]]; then
-            actions_taken="$actions_taken + networks"
-        else
-            actions_taken="networks"
+    local current_networks_str=$(printf "%s\n" "${current_ethnode_networks[@]}" | sort | tr '\n' ' ')
+    if [[ "$stored_networks" != "$current_networks_str" ]]; then
+        # Networks changed, update monitoring
+        if rebuild_vero_beacon_urls "${current_ethnode_networks[@]}"; then
+            [[ -n "$actions_taken" ]] && actions_taken="${actions_taken}, networks" || actions_taken="networks"
+            echo "$current_networks_str" > "$monitoring_networks_file"
         fi
     fi
     
@@ -2179,10 +2485,10 @@ docker_intelligent_connecting_kontainer_system() {
             [[ "$silent_mode" != "silent" ]] && echo "  → Restarting $service to apply changes"
             case "$service" in
                 "monitoring")
-                    cd "$HOME/monitoring" && docker compose down && docker compose up -d > /dev/null 2>&1
+                    cd "$HOME/monitoring" && docker compose down && docker compose up -d
                     ;;
                 "vero")  
-                    cd "$HOME/vero" && docker compose restart vero > /dev/null 2>&1
+                    cd "$HOME/vero" && docker compose down vero && docker compose up -d vero
                     ;;
             esac
         done
@@ -2293,6 +2599,7 @@ EOF
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - nodeboi-net
 EOF
@@ -2351,13 +2658,16 @@ rebuild_vero_beacon_urls() {
     
     # Build new beacon URLs list
     local beacon_urls=()
-    for network in "${ethnode_networks[@]}"; do
-        local node_name="${network%-net}"
-        
-        # Detect beacon client for this node
-        local beacon_client="lodestar"  # default
-        if [[ -f "$HOME/$node_name/.env" ]]; then
-            local compose_file=$(grep "COMPOSE_FILE=" "$HOME/$node_name/.env" | cut -d'=' -f2)
+    
+    # Detect all beacon nodes from ethnodes
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local node_name=$(basename "$dir")
+            
+            # Detect beacon client for this node
+            local compose_file=$(grep "COMPOSE_FILE=" "$dir/.env" | cut -d'=' -f2)
+            local beacon_client="lodestar"  # default
+            
             if [[ "$compose_file" == *"grandine"* ]]; then
                 beacon_client="grandine"
             elif [[ "$compose_file" == *"lighthouse"* ]]; then
@@ -2367,9 +2677,10 @@ rebuild_vero_beacon_urls() {
             elif [[ "$compose_file" == *"lodestar"* ]]; then
                 beacon_client="lodestar"
             fi
+            
+            # CRITICAL: Always use port 5052 for internal communication
+            beacon_urls+=("http://$node_name-$beacon_client:5052")
         fi
-        
-        beacon_urls+=("http://$node_name-$beacon_client:5052")
     done
     
     # Get current beacon URLs

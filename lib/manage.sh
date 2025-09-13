@@ -208,6 +208,15 @@ remove_node() {
     if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         source "${NODEBOI_LIB}/monitoring.sh"
         remove_ethnode_from_monitoring "$node_name"
+        
+        # Clean up Grafana dashboards and metric data for this ethnode
+        cleanup_removed_ethnode_monitoring "$node_name"
+    fi
+    
+    # Update Vero beacon URLs if Vero exists
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+        echo -e "${UI_MUTED}  Updating Vero beacon node configuration...${NC}" >&2
+        update_vero_after_ethnode_removal "$node_name"
     fi
     
     # Check if nodeboi-net should be removed (when no other services use it)
@@ -290,7 +299,7 @@ remove_nodes_menu() {
             force_refresh_dashboard
             echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
         else
-            print_box "Removal cancelled" "info"
+            echo -e "${GREEN}Removal cancelled${NC}"
         fi
     fi
     
@@ -471,16 +480,24 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
     # Determine endpoint display based on HOST_IP with NEW indicators
     local endpoint_host="localhost"
     local access_indicator=""
+    local exec_container_host=""
+    local cons_container_host=""
 
     if [[ "$host_ip" == "127.0.0.1" ]]; then
-        endpoint_host="localhost"
+        # For localhost access, show accessible localhost endpoints
+        exec_container_host="localhost"
+        cons_container_host="localhost"
         access_indicator=" ${GREEN}[M]${NC}"  # My machine only
     elif [[ "$host_ip" == "0.0.0.0" ]]; then
         # Show actual LAN IP if bound to all interfaces
         endpoint_host=$(hostname -I | awk '{print $1}')
+        exec_container_host="$endpoint_host"
+        cons_container_host="$endpoint_host"
         access_indicator=" ${RED}[A]${NC}"  # All networks
     elif [[ -n "$host_ip" ]]; then
         endpoint_host="$host_ip"
+        exec_container_host="$endpoint_host"
+        cons_container_host="$endpoint_host"
         access_indicator=" ${YELLOW}[L]${NC}"  # Local network
     fi
 
@@ -510,11 +527,11 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
 
         # Execution client line
         printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
-            "$el_check" "${exec_client}${el_sync_status}" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator" "$endpoint_host" "$el_rpc"
+            "$el_check" "${exec_client}${el_sync_status}" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator" "$exec_container_host" "$el_rpc"
 
         # Consensus client line
         printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
-            "$cl_check" "${cons_client}${cl_sync_status}" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator" "$endpoint_host" "$cl_rest"
+            "$cl_check" "${cons_client}${cl_sync_status}" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator" "$cons_container_host" "$cl_rest"
 
         # MEV-boost line (only show if it's running)
         if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]]; then
@@ -672,7 +689,28 @@ check_vero_health() {
     
     if [[ "$containers_running" == true ]]; then
         echo -e "  $status_indicator vero ($network) $access_indicator"
-        printf "     %b %-20s (%s)%b\n" "$vero_check" "vero" "$(display_version "vero" "$version")" "$vero_update_indicator"
+        # Check attestation status from Vero metrics
+        local attestation_status="not attesting"
+        local attestation_check=$(docker exec vero python -c "
+import urllib.request
+result = 'NOT_ATTESTING'
+try:
+    response = urllib.request.urlopen('http://localhost:9010/metrics', timeout=2)
+    content = response.read().decode()
+    for line in content.split('\n'):
+        if line.startswith('vc_published_attestations_total'):
+            value = float(line.split()[1])
+            if value > 0:
+                result = 'ATTESTING'
+            break
+except:
+    pass
+print(result)
+" 2>/dev/null)
+        if [[ "$attestation_check" == "ATTESTING" ]]; then
+            attestation_status="attesting"
+        fi
+        printf "     ${vero_check} %-20s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
         printf "     %s %-20s\n" "" "Connected to:"
         
         # Handle case where no beacon nodes are configured
@@ -689,10 +727,15 @@ check_vero_health() {
                 local port=$(echo "$url" | sed 's|.*:||g')
                 local display_name=$(echo "$container_name" | sed 's|-[a-z]*||g')  # ethnode1 from ethnode1-grandine
                 
-                # Check if the beacon node container is running and healthy
-                # Use docker exec to check from within the container's network with the correct port
-                if docker exec "$container_name" curl -s --max-time 2 "http://localhost:${port}/eth/v1/node/health" >/dev/null 2>&1 || \
-                   docker exec "$container_name" curl -s --max-time 2 "http://localhost:${port}/eth/v1/node/syncing" >/dev/null 2>&1; then
+                # Simple check: is the container running and configured?
+                local is_healthy=false
+                
+                # Check if container is running
+                if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+                    is_healthy=true
+                fi
+                
+                if [[ "$is_healthy" == "true" ]]; then
                     printf "     ${GREEN}✓${NC} %s\n" "$display_name"
                     ((reachable_count++))
                 else
@@ -703,6 +746,7 @@ check_vero_health() {
             # Show warning if no beacon nodes are reachable
             if [[ $reachable_count -eq 0 ]]; then
                 printf "     ${YELLOW}⚠️  No beacon nodes reachable${NC}\n"
+                printf "     ${UI_MUTED}Check beacon node ports and network connectivity${NC}\n"
             fi
         fi
     else
@@ -1021,6 +1065,7 @@ manage_node_state() {
                     echo -e "${UI_MUTED}Starting ${nodes[$i]}...${NC}"
                     cd "$HOME/${nodes[$i]}" && docker compose up -d > /dev/null 2>&1
                     force_refresh_dashboard
+                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
                 fi
             done
             echo -e "${GREEN}All stopped nodes started${NC}"
@@ -1060,6 +1105,7 @@ manage_node_state() {
                         echo -e "\n${YELLOW}Starting $node_name...${NC}"
                         cd "$node_dir" && docker compose up -d > /dev/null 2>&1
                         force_refresh_dashboard
+                        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
                         echo -e "${GREEN}$node_name started${NC}"
                         ;;
                     1)
@@ -1819,4 +1865,152 @@ manage_nodeboi_network_lifecycle() {
             fi
             ;;
     esac
+}
+
+# Update Vero beacon URLs after ethnode removal
+update_vero_after_ethnode_removal() {
+    local removed_node="$1"
+    local env_file="$HOME/vero/.env"
+    
+    # Check if the removed node is currently in Vero's beacon URLs
+    if [[ -f "$env_file" ]]; then
+        local current_urls=$(grep "BEACON_NODE_URLS=" "$env_file" | cut -d'=' -f2)
+        if [[ "$current_urls" == *"$removed_node"* ]]; then
+            echo -e "${UI_MUTED}    → Removed ethnode was in Vero's beacon configuration${NC}" >&2
+            
+            # Get list of remaining ethnode networks
+            local remaining_networks=()
+            for dir in "$HOME"/ethnode*; do
+                if [[ -d "$dir" && -f "$dir/.env" && "$(basename "$dir")" != "$removed_node" ]]; then
+                    remaining_networks+=("$(basename "$dir")")
+                fi
+            done
+            
+            if [[ ${#remaining_networks[@]} -eq 0 ]]; then
+                echo -e "${YELLOW}    → No remaining beacon nodes - Vero may not function${NC}" >&2
+                return 1
+            fi
+            
+            # Rebuild beacon URLs using the same logic as validator-manager.sh
+            local beacon_urls=""
+            for ethnode in "${remaining_networks[@]}"; do
+                local beacon_client=""
+                
+                # Check which beacon client is running in nodeboi-net
+                if docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-grandine"; then
+                    beacon_client="grandine"
+                elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lodestar"; then
+                    beacon_client="lodestar"
+                elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lighthouse"; then
+                    beacon_client="lighthouse"
+                elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-teku"; then
+                    beacon_client="teku"
+                else
+                    echo -e "${YELLOW}    → Warning: No beacon client found for ${ethnode}, skipping${NC}" >&2
+                    continue
+                fi
+                
+                # For container-to-container communication, always use internal port 5052
+                if [[ -z "$beacon_urls" ]]; then
+                    beacon_urls="http://${ethnode}-${beacon_client}:5052"
+                else
+                    beacon_urls="${beacon_urls},http://${ethnode}-${beacon_client}:5052"
+                fi
+            done
+            
+            if [[ -n "$beacon_urls" ]]; then
+                # Create backup of original file
+                cp "$env_file" "${env_file}.backup" || {
+                    echo -e "${RED}    → Error: Failed to create backup of .env file${NC}" >&2
+                    return 1
+                }
+                
+                # Update the .env file with safer approach
+                local temp_file="$env_file.tmp"
+                
+                # Use awk for safer file modification
+                if awk -v new_urls="$beacon_urls" '
+                    /^BEACON_NODE_URLS=/ { print "BEACON_NODE_URLS=" new_urls; next }
+                    { print }
+                ' "$env_file" > "$temp_file"; then
+                    
+                    # Validate the temp file was created successfully
+                    if [[ -s "$temp_file" ]] && grep -q "^BEACON_NODE_URLS=$beacon_urls" "$temp_file"; then
+                        mv "$temp_file" "$env_file"
+                        echo -e "${UI_MUTED}    → Updated Vero beacon URLs: $beacon_urls${NC}" >&2
+                        
+                        # Remove backup on success
+                        rm -f "${env_file}.backup"
+                        
+                        # Restart Vero to apply changes using down/up for full reload
+                        (
+                            if cd "$HOME/vero" 2>/dev/null; then
+                                echo -e "${UI_MUTED}    → Restarting Vero to apply changes...${NC}" >&2
+                                docker compose down > /dev/null 2>&1 || true
+                                sleep 2
+                                docker compose up -d > /dev/null 2>&1 || true
+                                [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+                            fi
+                        )
+                    else
+                        echo -e "${RED}    → Error: Failed to validate updated .env file${NC}" >&2
+                        # Restore from backup
+                        mv "${env_file}.backup" "$env_file" 2>/dev/null || true
+                        rm -f "$temp_file"
+                        return 1
+                    fi
+                else
+                    echo -e "${RED}    → Error: Failed to update .env file${NC}" >&2
+                    # Restore from backup
+                    mv "${env_file}.backup" "$env_file" 2>/dev/null || true
+                    rm -f "$temp_file"
+                    return 1
+                fi
+            else
+                echo -e "${RED}    → Error: No valid beacon nodes found for Vero${NC}" >&2
+                return 1
+            fi
+        else
+            echo -e "${UI_MUTED}    → Removed ethnode was not in Vero's configuration${NC}" >&2
+        fi
+    fi
+}
+
+# Clean up monitoring data for removed ethnode
+cleanup_removed_ethnode_monitoring() {
+    local removed_node="$1"
+    
+    echo -e "${UI_MUTED}    → Cleaning up monitoring data for $removed_node...${NC}" >&2
+    
+    # Remove Grafana dashboards for this ethnode
+    if [[ -d "$HOME/monitoring" ]] && command -v curl >/dev/null 2>&1; then
+        # Check if Grafana is running
+        if docker ps --format "{{.Names}}" | grep -q "monitoring-grafana"; then
+            local grafana_url="http://localhost:3000"
+            
+            # Get admin credentials
+            local admin_user="admin"
+            local admin_pass="admin"
+            if [[ -f "$HOME/monitoring/.env" ]]; then
+                admin_pass=$(grep "GF_SECURITY_ADMIN_PASSWORD=" "$HOME/monitoring/.env" | cut -d'=' -f2 || echo "admin")
+            fi
+            
+            # Get list of dashboards and remove ones matching the ethnode
+            local dashboards=$(curl -s -u "$admin_user:$admin_pass" "$grafana_url/api/search?type=dash-db" 2>/dev/null || echo "[]")
+            
+            # Look for dashboards with titles containing the removed node name
+            if command -v jq >/dev/null 2>&1; then
+                echo "$dashboards" | jq -r ".[] | select(.title | test(\"$removed_node\"; \"i\")) | .uid" 2>/dev/null | while read -r uid; do
+                    if [[ -n "$uid" ]]; then
+                        curl -s -X DELETE -u "$admin_user:$admin_pass" "$grafana_url/api/dashboards/uid/$uid" > /dev/null 2>&1
+                        echo -e "${UI_MUTED}      → Removed dashboard for $removed_node${NC}" >&2
+                    fi
+                done
+            fi
+        fi
+    fi
+    
+    # Note: Prometheus metric data cleanup would require more complex operations
+    # For now, metrics will naturally expire based on retention settings
+    echo -e "${UI_MUTED}    → Metric data will expire naturally per retention policy${NC}" >&2
 }

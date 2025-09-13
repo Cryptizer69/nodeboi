@@ -928,26 +928,26 @@ install_node() {
     }
 
     # Check for existing monitoring network and connect if it exists
-    if docker network ls --format "{{.Name}}" | grep -q "^monitoring-net$"; then
-        echo -e "${UI_MUTED}Detected monitoring - connecting to monitoring network...${NC}"
+    if docker network ls --format "{{.Name}}" | grep -q "^nodeboi-net$"; then
+        echo -e "${UI_MUTED}Detected monitoring - connecting to nodeboi network...${NC}"
         
-        # Add monitoring network to compose.yml
+        # Add nodeboi network to compose.yml
         cat >> compose.yml << 'EOF'
-  monitoring-net:
+  nodeboi-net:
     external: true
-    name: monitoring-net
+    name: nodeboi-net
 EOF
         
-        # Update all services to connect to monitoring network
+        # Update all services to connect to nodeboi network
         # This uses a temporary file to modify the compose.yml
         sed -i '/^services:/,/^networks:/ { 
             /^    networks:/ { 
-                a\      - monitoring-net
+                a\      - nodeboi-net
             }
             /^    network_mode:/ {
                 c\    networks:\
       - default\
-      - monitoring-net
+      - nodeboi-net
             }
         }' compose.yml
     fi
@@ -1045,6 +1045,7 @@ EOF
                 beacon_client="lodestar" # fallback
             fi
             
+            # For container-to-container communication, always use internal port 5052
             local new_beacon_url="http://${node_name}-${beacon_client}:5052"
             local updated_beacon_urls="${current_beacon_urls},${new_beacon_url}"
             
@@ -1063,7 +1064,7 @@ EOF
             echo "Vero uses majority threshold - with 3+ beacon nodes, 2 must agree for attestation signing."
             echo
             echo "Restarting Vero to apply changes..."
-            cd "$HOME/vero" && docker compose restart vero
+            cd "$HOME/vero" && docker compose down vero && docker compose up -d vero
             echo -e "${GREEN}✓ Vero restarted with new beacon node connection${NC}"
             
             # Refresh dashboard again to show Vero integration
@@ -1076,8 +1077,8 @@ EOF
     if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
         source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
-        sync_grafana_dashboards > /dev/null 2>&1
+        docker_intelligent_connecting_kontainer_system --auto
+        sync_grafana_dashboards
         echo -e "${GREEN}✓ Monitoring integration updated${NC}"
         echo
         
@@ -1092,8 +1093,8 @@ EOF
     if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
         source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
-        sync_grafana_dashboards > /dev/null 2>&1
+        docker_intelligent_connecting_kontainer_system --auto
+        sync_grafana_dashboards
         echo -e "${GREEN}✓ Monitoring integration updated${NC}"
         echo
     fi
@@ -1199,6 +1200,12 @@ EOF
     
     echo -e "${GREEN}✓ Ethnode installation completed successfully!${NC}"
     echo
+    
+    # Integrate with existing services
+    integrate_new_ethnode_with_services "$node_name"
+    
+    # Ensure we're back in the nodeboi directory
+    cd "${NODEBOI_DIR}" 2>/dev/null || cd "$HOME/.nodeboi" 2>/dev/null || true
     
     press_enter
 }
@@ -1430,5 +1437,161 @@ update_node() {
     
     press_enter
     trap - INT
+}
+
+# Integrate newly installed ethnode with existing services
+integrate_new_ethnode_with_services() {
+    local new_node="$1"
+    
+    echo
+    echo -e "${CYAN}${BOLD}Service Integration${NC}"
+    echo "=================="
+    echo
+    
+    # Check if Vero exists and offer to add this beacon node
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
+        echo -e "${GREEN}Found existing Vero validator service${NC}"
+        
+        # Check if this ethnode should be added to Vero's beacon nodes
+        if fancy_confirm "Add this beacon node to Vero's configuration?" "y"; then
+            echo -e "${UI_MUTED}Updating Vero beacon node configuration...${NC}"
+            add_ethnode_to_vero "$new_node"
+        else
+            echo -e "${UI_MUTED}Skipping Vero integration${NC}"
+        fi
+        echo
+    fi
+    
+    # Check if monitoring exists and add dashboards
+    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+        echo -e "${GREEN}Found existing monitoring service${NC}"
+        echo -e "${UI_MUTED}Adding dashboards for new ethnode...${NC}"
+        
+        # Source monitoring functions and sync dashboards
+        (
+            source "${NODEBOI_LIB}/monitoring.sh" 2>/dev/null || true
+            if command -v sync_grafana_dashboards >/dev/null 2>&1; then
+                sync_grafana_dashboards >/dev/null 2>&1 || true
+            fi
+            
+            # Update monitoring configuration to include new ethnode
+            if command -v update_monitoring_targets >/dev/null 2>&1; then
+                update_monitoring_targets >/dev/null 2>&1 || true
+            fi
+        )
+        echo -e "${UI_MUTED}✓ Monitoring integration updated${NC}"
+        echo
+    fi
+    
+    echo -e "${GREEN}✓ Service integration completed${NC}"
+    
+    # Ensure clean terminal state for menu return
+    stty sane 2>/dev/null || true
+    tput sgr0 2>/dev/null || true
+}
+
+# Add ethnode to Vero's beacon node configuration
+add_ethnode_to_vero() {
+    local new_node="$1"
+    local env_file="$HOME/vero/.env"
+    
+    # Validate environment file exists
+    if [[ ! -f "$env_file" ]]; then
+        echo -e "${RED}  → Error: Vero .env file not found at $env_file${NC}"
+        return 1
+    fi
+    
+    # Detect the beacon client for this new node
+    local beacon_client=""
+    if docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-grandine"; then
+        beacon_client="grandine"
+    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lodestar"; then
+        beacon_client="lodestar"
+    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lighthouse"; then
+        beacon_client="lighthouse"
+    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-teku"; then
+        beacon_client="teku"
+    else
+        echo -e "${YELLOW}  → Warning: Could not detect beacon client for ${new_node}${NC}"
+        return 1
+    fi
+    
+    # Get current beacon URLs with better parsing
+    local current_urls=""
+    if [[ -f "$env_file" ]]; then
+        current_urls=$(grep "^BEACON_NODE_URLS=" "$env_file" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    fi
+    
+    # Create new beacon URL for container-to-container communication
+    local new_url="http://${new_node}-${beacon_client}:5052"
+    
+    # Check if URL is already present
+    if [[ -n "$current_urls" && "$current_urls" == *"$new_url"* ]]; then
+        echo -e "${UI_MUTED}  → Beacon node already in Vero configuration${NC}"
+        return 0
+    fi
+    
+    # Build updated URLs list
+    local updated_urls=""
+    if [[ -z "$current_urls" || "$current_urls" == "" ]]; then
+        updated_urls="$new_url"
+    else
+        updated_urls="${current_urls},${new_url}"
+    fi
+    
+    # Validate updated_urls is not empty
+    if [[ -z "$updated_urls" ]]; then
+        echo -e "${RED}  → Error: Failed to build updated beacon URLs${NC}"
+        return 1
+    fi
+    
+    # Create backup of original file
+    cp "$env_file" "${env_file}.backup" || {
+        echo -e "${RED}  → Error: Failed to create backup of .env file${NC}"
+        return 1
+    }
+    
+    # Update the .env file with safer approach
+    local temp_file="$env_file.tmp"
+    
+    # Use a more robust sed approach with proper escaping
+    if awk -v new_urls="$updated_urls" '
+        /^BEACON_NODE_URLS=/ { print "BEACON_NODE_URLS=" new_urls; next }
+        { print }
+    ' "$env_file" > "$temp_file"; then
+        
+        # Validate the temp file was created successfully and contains the expected line
+        if [[ -s "$temp_file" ]] && grep -q "^BEACON_NODE_URLS=$updated_urls" "$temp_file"; then
+            mv "$temp_file" "$env_file"
+            echo -e "${UI_MUTED}  → Added beacon node: $new_url${NC}"
+            echo -e "${UI_MUTED}  → Updated beacon URLs: $updated_urls${NC}"
+            
+            # Remove backup on success
+            rm -f "${env_file}.backup"
+        else
+            echo -e "${RED}  → Error: Failed to validate updated .env file${NC}"
+            # Restore from backup
+            mv "${env_file}.backup" "$env_file" 2>/dev/null || true
+            rm -f "$temp_file"
+            return 1
+        fi
+    else
+        echo -e "${RED}  → Error: Failed to update .env file${NC}"
+        # Restore from backup
+        mv "${env_file}.backup" "$env_file" 2>/dev/null || true
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Restart Vero to apply changes using down/up for full reload
+    (
+        if cd "$HOME/vero" 2>/dev/null; then
+            echo -e "${UI_MUTED}  → Restarting Vero to apply changes...${NC}"
+            docker compose down > /dev/null 2>&1 || true
+            sleep 2
+            docker compose up -d > /dev/null 2>&1 || true
+            echo -e "${UI_MUTED}  → Vero restarted successfully${NC}"
+        fi
+    )
 }
 
