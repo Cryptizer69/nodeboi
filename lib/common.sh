@@ -1,6 +1,19 @@
 #!/bin/bash
 # lib/common.sh - Common utilities and shared functions for NODEBOI
 
+# Load dashboard management system (with circular dependency protection)
+if [[ -z "$_COMMON_SH_LOADED" ]]; then
+    export _COMMON_SH_LOADED=1
+    [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]] && source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
+    # Load lifecycle integration layer to bridge legacy and new systems
+    [[ -f "${NODEBOI_LIB}/lifecycle-integration.sh" ]] && source "${NODEBOI_LIB}/lifecycle-integration.sh"
+    # Load lifecycle hooks for service management
+    [[ -f "${NODEBOI_LIB}/lifecycle-hooks.sh" ]] && source "${NODEBOI_LIB}/lifecycle-hooks.sh"
+fi
+
+# Global settings
+export DASHBOARD_CACHE_LOCK="$HOME/.nodeboi/cache/dashboard.lock"
+
 # Standardized logging functions
 log_success() {
     echo -e "${GREEN}✓ $1${NC}"
@@ -18,25 +31,87 @@ log_info() {
     echo -e "${UI_MUTED}$1${NC}"
 }
 
-# Dashboard refresh utility - centralize the repeated pattern
+# Universal Dashboard Refresh - Routes to lifecycle system first, fallback to legacy
 refresh_dashboard() {
-    if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
+    # Lifecycle system first (preferred)
+    if declare -f trigger_dashboard_refresh >/dev/null 2>&1; then
+        trigger_dashboard_refresh "manual_refresh" "dashboard_refresh" 2>/dev/null || true
+    # Legacy fallback
+    elif [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
         source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1
     fi
 }
 
-# Background dashboard refresh (non-blocking)
+# Background dashboard refresh (non-blocking) - lifecycle aware
 refresh_dashboard_background() {
-    if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-        (source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard > /dev/null 2>&1) &
+    # Lifecycle system first (preferred)
+    if declare -f trigger_dashboard_refresh >/dev/null 2>&1; then
+        trigger_dashboard_refresh "background_refresh" "dashboard_background" 2>/dev/null || true
+    # Legacy fallback
+    elif [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
+        source "${NODEBOI_LIB}/manage.sh" && generate_dashboard_background
     fi
 }
 
-# Monitoring dashboard refresh utility
-refresh_monitoring_dashboards() {
-    if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
+# Monitoring dashboard refresh utility - function is imported from grafana-dashboard-management.sh
+
+# Service Management - Universal entry point for ALL service operations
+# Now integrated with lifecycle system for proper state management
+manage_service() {
+    local action="$1"
+    local service="$2"
+    local service_name="${3:-}"
+    
+    # Auto-detect service directory if not provided
+    local service_dir
+    if [[ -d "$service" ]]; then
+        service_dir="$service"
+        service_name="${service_name:-$(basename "$service")}"
+    elif [[ -d "$HOME/$service" ]]; then
+        service_dir="$HOME/$service" 
+        service_name="${service_name:-$service}"
+    else
+        log_error "Service not found: $service"
+        return 1
     fi
+    
+    # Use the existing safe_docker_compose with event hooks
+    safe_docker_compose "$action" "$service_dir" "$service_name"
+    local compose_result=$?
+    
+    # Lifecycle integration: Update service registry status
+    if [[ $compose_result -eq 0 ]]; then
+        case "$action" in
+            "up"|"start")
+                if declare -f update_service_status >/dev/null 2>&1; then
+                    update_service_status "$service_name" "running" 2>/dev/null || true
+                fi
+                ;;
+            "down"|"stop")
+                if declare -f update_service_status >/dev/null 2>&1; then
+                    update_service_status "$service_name" "stopped" 2>/dev/null || true
+                fi
+                ;;
+            "restart")
+                if declare -f update_service_status >/dev/null 2>&1; then
+                    update_service_status "$service_name" "running" 2>/dev/null || true
+                fi
+                ;;
+        esac
+    fi
+    
+    # Lifecycle integration: Trigger dashboard refresh
+    case "$action" in
+        "up"|"start"|"down"|"stop"|"restart")
+            if declare -f trigger_dashboard_refresh >/dev/null 2>&1; then
+                trigger_dashboard_refresh "service_${action}" "$service_name" 2>/dev/null || true
+            elif declare -f refresh_monitoring_dashboards >/dev/null 2>&1; then
+                refresh_monitoring_dashboards >/dev/null 2>&1 || true
+            fi
+            ;;
+    esac
+    
+    return $compose_result
 }
 
 # Safe Docker Compose operations with error handling
@@ -54,16 +129,73 @@ safe_docker_compose() {
     
     case "$action" in
         "up")
-            docker compose up -d $service_name
+            # Safety warning for validator services
+            if [[ "$service_name" =~ ^(vero|teku-validator)$ ]] || [[ "$service_dir" =~ (vero|teku-validator)$ ]]; then
+                if ! validator_safety_warning "$service_name validator"; then
+                    log_error "Validator startup cancelled by user"
+                    return 1
+                fi
+            fi
+            
+            # For ethnode services, start all containers (don't pass service_name as it's not a compose service)
+            if [[ "$service_name" =~ ^ethnode[0-9]*$ ]] || [[ "$service_dir" =~ ethnode[0-9]*$ ]]; then
+                docker compose up -d
+            else
+                docker compose up -d $service_name
+            fi
+            # Monitoring lifecycle hooks
+            if [[ "$service_name" == "monitoring" ]] || [[ "$service_dir" =~ monitoring$ ]]; then
+                # Pre-start configuration fix
+                if declare -f setup_monitoring_on_start >/dev/null; then
+                    setup_monitoring_on_start "$service_dir"
+                fi
+                # Post-start network connections (run in background)
+                if declare -f connect_monitoring_networks >/dev/null; then
+                    (sleep 5 && connect_monitoring_networks) &
+                fi
+            fi
+            # GDS: Add dashboard immediately when service starts
+            if [[ -n "$service_name" ]] && declare -f gds_on_service_start >/dev/null; then
+                gds_on_service_start "$service_name" "$service_dir"
+            fi
             ;;
         "down")
-            docker compose down $service_name
+            # GDS: Remove dashboard immediately when service stops
+            if [[ -n "$service_name" ]] && declare -f gds_on_service_stop >/dev/null; then
+                gds_on_service_stop "$service_name" "$service_dir"
+            fi
+            # For ethnode services, stop all containers
+            if [[ "$service_name" =~ ^ethnode[0-9]*$ ]] || [[ "$service_dir" =~ ethnode[0-9]*$ ]]; then
+                docker compose down
+            else
+                docker compose down $service_name
+            fi
             ;;
         "restart")
-            docker compose down $service_name && docker compose up -d $service_name
+            # Safety warning for validator services
+            if [[ "$service_name" =~ ^(vero|teku-validator)$ ]] || [[ "$service_dir" =~ (vero|teku-validator)$ ]]; then
+                if ! validator_safety_warning "$service_name validator"; then
+                    log_error "Validator restart cancelled by user"
+                    return 1
+                fi
+            fi
+            
+            # GDS: Handle restart as stop then start
+            if [[ -n "$service_name" ]] && declare -f gds_on_service_stop >/dev/null; then
+                gds_on_service_stop "$service_name" "$service_dir"
+            fi
+            # For ethnode services, restart all containers
+            if [[ "$service_name" =~ ^ethnode[0-9]*$ ]] || [[ "$service_dir" =~ ethnode[0-9]*$ ]]; then
+                docker compose down && docker compose up -d
+            else
+                docker compose down $service_name && docker compose up -d $service_name
+            fi
+            if [[ -n "$service_name" ]] && declare -f gds_on_service_start >/dev/null; then
+                gds_on_service_start "$service_name" "$service_dir"
+            fi
             ;;
         "logs")
-            docker compose logs -f $service_name
+            docker compose logs -f --tail=20 $service_name
             ;;
         *)
             docker compose "$action" $service_name
@@ -133,6 +265,36 @@ validate_docker() {
     fi
     
     return 0
+}
+
+# Validator startup safety warning
+validator_safety_warning() {
+    local operation="$1"
+    
+    echo
+    echo "Validator Startup Warning"
+    echo
+    echo "Slashing Risk: Starting a validator with keys that are active elsewhere will"
+    echo "result in slashing penalties and loss of staked ETH."
+    echo
+    echo "Doppelganger Protection: Starting a validator immediately after stopping it"
+    echo "can trigger doppelganger detection, causing the validator client to quit."
+    echo "There's no harm in this but it's an annoyance because you have to restart"
+    echo "the client. To avoid this, wait more than 15 minutes."
+    echo
+    echo "Verification: Check beaconcha.in to confirm your keys have been offline"
+    echo "for at least 2 epochs before proceeding."
+    echo
+    echo "Type PROCEED to confirm you have waited and verified offline status:"
+    read -r response
+    
+    if [[ "${response^^}" == "PROCEED" ]]; then
+        echo "Starting $operation..."
+        return 0
+    else
+        echo "Startup cancelled."
+        return 1
+    fi
 }
 
 # Generic confirmation function

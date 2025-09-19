@@ -42,7 +42,14 @@ PINK='\033[38;5;213m'
 
 # UI Functions
 print_header() {
-    echo -e "${PINK}${BOLD}"
+    # Use original colors with UI variable fallbacks for compatibility
+    local header_color="${PINK:-\033[38;5;213m}"
+    local bold="${BOLD:-\033[1m}"
+    local reset="${NC:-\033[0m}"
+    local cyan="${CYAN:-\033[0;36m}"
+    local yellow="${YELLOW:-\033[0;33m}"
+    
+    echo -e "${header_color}${bold}"
     cat << "HEADER"
       ███╗   ██╗ ██████╗ ██████╗ ███████╗██████╗  ██████╗ ██╗
       ████╗  ██║██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║
@@ -51,9 +58,9 @@ print_header() {
       ██║ ╚████║╚██████╔╝██████╔╝███████╗██████╔╝╚██████╔╝██║
       ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
 HEADER
-    echo -e "${NC}"
-    echo -e "                      ${CYAN}ETHEREUM NODE AUTOMATION${NC}"
-    echo -e "                             ${YELLOW}${SCRIPT_VERSION}${NC}"
+    echo -e "${reset}"
+    echo -e "                      ${cyan}ETHEREUM NODE AUTOMATION${reset}"
+    echo -e "                             ${yellow}${SCRIPT_VERSION}${reset}"
 
     echo
 }
@@ -89,7 +96,7 @@ install_service_menu() {
             
             case "$selected_option" in
                 "Install new ethnode")
-                    install_node
+                    install_ethnode_universal
                     ;;
                 "Install Web3signer")
                     [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
@@ -122,9 +129,23 @@ install_validator_submenu() {
     while true; do
         local validator_options=()
         
-        # Add Vero if not already installed
-        if [[ ! -d "$HOME/vero" ]]; then
+        # Only allow one validator type - show available options
+        local has_vero=false
+        local has_teku_validator=false
+        
+        [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]] && has_vero=true
+        [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]] && has_teku_validator=true
+        
+        if [[ "$has_vero" == false && "$has_teku_validator" == false ]]; then
+            # No validator installed - show both options
             validator_options+=("Install Vero")
+            validator_options+=("Install Teku validator")
+        elif [[ "$has_vero" == true ]]; then
+            # Vero is installed - only show Teku with explanation
+            validator_options+=("Install Teku validator (requires removing Vero)")
+        elif [[ "$has_teku_validator" == true ]]; then
+            # Teku validator is installed - only show Vero with explanation
+            validator_options+=("Install Vero (requires removing Teku validator)")
         fi
         
         validator_options+=("Back to install menu")
@@ -137,6 +158,30 @@ install_validator_submenu() {
                 "Install Vero")
                     [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
                     install_vero
+                    # Return to main menu after installation
+                    return
+                    ;;
+                "Install Vero (requires removing Teku validator)")
+                    echo -e "${RED}✗ Teku validator is already installed${NC}"
+                    echo -e "${UI_MUTED}Only one validator client is supported at a time${NC}"
+                    echo -e "${UI_MUTED}Remove Teku validator first to install Vero${NC}"
+                    echo
+                    echo -e "${UI_MUTED}Go to: Manage services → Manage validator → Manage Teku validator → Remove Teku validator${NC}"
+                    press_enter
+                    ;;
+                "Install Teku validator")
+                    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+                    install_teku_validator
+                    # Return to main menu after installation
+                    return
+                    ;;
+                "Install Teku validator (requires removing Vero)")
+                    echo -e "${RED}✗ Vero is already installed${NC}"
+                    echo -e "${UI_MUTED}Only one validator client is supported at a time${NC}"
+                    echo -e "${UI_MUTED}Remove Vero first to install Teku validator${NC}"
+                    echo
+                    echo -e "${UI_MUTED}Go to: Manage services → Manage validator → Manage Vero → Remove Vero${NC}"
+                    press_enter
                     ;;
                 "Back to install menu")
                     return
@@ -148,7 +193,7 @@ install_validator_submenu() {
     done
 }
 
-# Manage Web3signer submenu
+# Manage web3signer submenu
 manage_web3signer_menu() {
     while true; do
         # Check if Web3signer is running to show appropriate start/stop option
@@ -175,22 +220,28 @@ manage_web3signer_menu() {
         )
         
         local selection
-        if selection=$(fancy_select_menu "Manage Web3signer" "${web3signer_options[@]}"); then
+        if selection=$(fancy_select_menu "Manage web3signer" "${web3signer_options[@]}"); then
             local selected_option="${web3signer_options[$selection]}"
             
             case "$selected_option" in
                 "Start Web3signer")
                     echo -e "${UI_MUTED}Starting Web3signer...${NC}"
-                    cd ~/web3signer && docker compose up -d
-                    echo -e "${GREEN}✓ Web3signer started${NC}"
+                    if manage_service "up" "web3signer"; then
+                        echo -e "${GREEN}✓ Web3signer started${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to start Web3signer${NC}"
+                    fi
                     refresh_dashboard_background
                     refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Web3signer")
                     echo -e "${UI_MUTED}Stopping Web3signer...${NC}"
-                    cd ~/web3signer && docker compose down
-                    echo -e "${GREEN}✓ Web3signer stopped${NC}"
+                    if manage_service "down" "web3signer"; then
+                        echo -e "${GREEN}✓ Web3signer stopped${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to stop Web3signer${NC}"
+                    fi
                     refresh_dashboard_background
                     press_enter
                     ;;
@@ -243,6 +294,68 @@ manage_web3signer_menu() {
     done
 }
 
+# Manage validator submenu - handles both Vero and Teku
+manage_validator_submenu() {
+    while true; do
+        local validator_options=()
+        
+        # Check which validators are installed
+        local has_vero=false
+        local has_teku_validator=false
+        
+        [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]] && has_vero=true
+        [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]] && has_teku_validator=true
+        
+        # Add available validator management options
+        if [[ "$has_vero" == true ]]; then
+            # Check if Vero is running to show appropriate option
+            if cd ~/vero 2>/dev/null && docker compose ps | grep -q "vero.*Up"; then
+                validator_options+=("Manage Vero (running)")
+            else
+                validator_options+=("Manage Vero (stopped)")
+            fi
+        fi
+        
+        if [[ "$has_teku_validator" == true ]]; then
+            # Check if Teku validator is running to show appropriate option
+            if cd ~/teku-validator 2>/dev/null && docker compose ps | grep -q "teku-validator.*Up"; then
+                validator_options+=("Manage Teku validator (running)")
+            else
+                validator_options+=("Manage Teku validator (stopped)")
+            fi
+        fi
+        
+        validator_options+=("Back to manage menu")
+        
+        local selection
+        if selection=$(fancy_select_menu "Manage Validator" "${validator_options[@]}"); then
+            local selected_option="${validator_options[$selection]}"
+            
+            case "$selected_option" in
+                "Manage Vero (running)"|"Manage Vero (stopped)")
+                    manage_vero_menu
+                    # Check if Vero was removed - if so, return to main menu
+                    if [[ ! -d "$HOME/vero" || ! -f "$HOME/vero/.env" ]]; then
+                        return
+                    fi
+                    ;;
+                "Manage Teku validator (running)"|"Manage Teku validator (stopped)")
+                    manage_teku_validator_menu
+                    # Check if Teku validator was removed - if so, return to main menu
+                    if [[ ! -d "$HOME/teku-validator" || ! -f "$HOME/teku-validator/.env" ]]; then
+                        return
+                    fi
+                    ;;
+                "Back to manage menu")
+                    return
+                    ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
 # Manage Vero submenu
 manage_vero_menu() {
     while true; do
@@ -264,35 +377,47 @@ manage_vero_menu() {
         )
         
         local selection
-        if selection=$(fancy_select_menu "Manage Vero" "${vero_options[@]}"); then
+        if selection=$(fancy_select_menu "Manage validator" "${vero_options[@]}"); then
             local selected_option="${vero_options[$selection]}"
             
             case "$selected_option" in
                 "Start Vero")
                     echo -e "${UI_MUTED}Starting Vero...${NC}"
-                    cd ~/vero && docker compose up -d
-                    echo -e "${GREEN}✓ Vero started${NC}"
+                    if manage_service "up" "vero"; then
+                        echo -e "${GREEN}✓ Vero started${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to start Vero${NC}"
+                    fi
                     refresh_dashboard_background
                     refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Vero")
                     echo -e "${UI_MUTED}Stopping Vero...${NC}"
-                    cd ~/vero && docker compose down
-                    echo -e "${GREEN}✓ Vero stopped${NC}"
+                    if manage_service "down" "vero"; then
+                        echo -e "${GREEN}✓ Vero stopped${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to stop Vero${NC}"
+                    fi
                     refresh_dashboard_background
                     press_enter
                     ;;
                 "Start/Stop Vero")
-                    # Legacy fallback - check status and toggle
-                    if cd ~/vero && docker compose ps | grep -q "vero.*running"; then
+                    # Check status and toggle using lifecycle system
+                    if cd ~/vero 2>/dev/null && docker compose ps | grep -q "vero.*running"; then
                         echo -e "${UI_MUTED}Stopping Vero...${NC}"
-                        docker compose down
-                        echo -e "${GREEN}✓ Vero stopped${NC}"
+                        if manage_service "down" "vero"; then
+                            echo -e "${GREEN}✓ Vero stopped${NC}"
+                        else
+                            echo -e "${RED}✗ Failed to stop Vero${NC}"
+                        fi
                     else
                         echo -e "${UI_MUTED}Starting Vero...${NC}"
-                        docker compose up -d
-                        echo -e "${GREEN}✓ Vero started${NC}"
+                        if manage_service "up" "vero"; then
+                            echo -e "${GREEN}✓ Vero started${NC}"
+                        else
+                            echo -e "${RED}✗ Failed to start Vero${NC}"
+                        fi
                         refresh_dashboard_background
                         refresh_monitoring_dashboards
                     fi
@@ -322,6 +447,202 @@ manage_vero_menu() {
             return
         fi
     done
+}
+
+# Manage Teku validator submenu
+manage_teku_validator_menu() {
+    while true; do
+        # If Teku validator was removed, return to parent menu
+        if [[ ! -d "$HOME/teku-validator" || ! -f "$HOME/teku-validator/.env" ]]; then
+            return
+        fi
+        
+        # Check Teku validator status dynamically
+        local teku_status=""
+        if cd ~/teku-validator 2>/dev/null && docker compose ps | grep -q "teku-validator.*running"; then
+            teku_status="Stop Teku validator"
+        else
+            teku_status="Start Teku validator"
+        fi
+        
+        local teku_options=(
+            "$teku_status"
+            "View logs"
+            "Update fee recipient"
+            "Change beacon node"
+            "Remove Teku validator"
+            "Back to manage menu"
+        )
+        
+        local selection
+        if selection=$(fancy_select_menu "Manage Teku Validator" "${teku_options[@]}"); then
+            local selected_option="${teku_options[$selection]}"
+            
+            case "$selected_option" in
+                "Start Teku validator")
+                    echo -e "${UI_MUTED}Starting Teku validator...${NC}"
+                    if manage_service "up" "teku-validator"; then
+                        echo -e "${GREEN}✓ Teku validator started${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to start Teku validator${NC}"
+                    fi
+                    refresh_dashboard_background
+                    refresh_monitoring_dashboards
+                    press_enter
+                    ;;
+                "Stop Teku validator")
+                    echo -e "${UI_MUTED}Stopping Teku validator...${NC}"
+                    if manage_service "down" "teku-validator"; then
+                        echo -e "${GREEN}✓ Teku validator stopped${NC}"
+                    else
+                        echo -e "${RED}✗ Failed to stop Teku validator${NC}"
+                    fi
+                    refresh_dashboard_background
+                    press_enter
+                    ;;
+                "View logs")
+                    echo -e "${UI_MUTED}Showing Teku validator logs (Ctrl+C to exit)...${NC}"
+                    cd ~/teku-validator && docker compose logs -f --tail=20 teku-validator
+                    ;;
+                "Update fee recipient")
+                    update_teku_validator_fee_recipient
+                    ;;
+                "Change beacon node")
+                    change_teku_validator_beacon_node
+                    ;;
+                "Remove Teku validator")
+                    remove_teku_validator
+                    # Return to main menu after removal since Teku validator management no longer makes sense
+                    return
+                    ;;
+                "Back to manage menu")
+                    return
+                    ;;
+            esac
+        else
+            return
+        fi
+    done
+}
+
+# Update Teku validator fee recipient
+update_teku_validator_fee_recipient() {
+    echo -e "${CYAN}Update Fee Recipient${NC}"
+    echo "===================="
+    echo
+    
+    # Get current fee recipient
+    local current_recipient=$(grep "FEE_RECIPIENT=" ~/teku-validator/.env | cut -d'=' -f2)
+    echo -e "${UI_MUTED}Current fee recipient: ${current_recipient}${NC}"
+    echo
+    
+    # Get new fee recipient
+    local new_recipient
+    new_recipient=$(fancy_text_input "Update Fee Recipient" \
+        "Enter new fee recipient address:" \
+        "$current_recipient" \
+        "")
+    
+    # Validate format
+    if [[ ! "$new_recipient" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        echo -e "${RED}Invalid fee recipient address format${NC}"
+        press_enter
+        return 1
+    fi
+    
+    # Update .env file
+    sed -i "s/FEE_RECIPIENT=.*/FEE_RECIPIENT=${new_recipient}/" ~/teku-validator/.env
+    
+    echo -e "${GREEN}✓ Fee recipient updated${NC}"
+    echo -e "${YELLOW}⚠️  Restart Teku validator to apply changes${NC}"
+    echo
+    
+    if fancy_confirm "Restart Teku validator now?" "y"; then
+        if manage_service "restart" "teku-validator"; then
+            echo -e "${GREEN}✓ Teku validator restarted with new fee recipient${NC}"
+        else
+            echo -e "${RED}✗ Failed to restart Teku validator${NC}"
+        fi
+        refresh_dashboard_background
+        refresh_monitoring_dashboards
+    fi
+    
+    press_enter
+}
+
+# Change Teku validator beacon node
+change_teku_validator_beacon_node() {
+    echo -e "${CYAN}Change Beacon Node${NC}"
+    echo "=================="
+    echo
+    
+    # Get current beacon URL
+    local current_url=$(grep "BEACON_NODE_URL=" ~/teku-validator/.env | cut -d'=' -f2)
+    echo -e "${UI_MUTED}Current beacon node: ${current_url}${NC}"
+    echo
+    
+    # Load the beacon selection function
+    [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+    
+    # Select new beacon node using fancy menu
+    local selected_beacon_url
+    selected_beacon_url=$(select_beacon_node_for_teku "$current_url")
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${UI_MUTED}No changes made${NC}"
+        press_enter
+        return
+    fi
+    
+    # Check if URL changed
+    if [[ "$selected_beacon_url" == "$current_url" ]]; then
+        echo -e "${UI_MUTED}No changes made - same beacon node selected${NC}"
+        press_enter
+        return
+    fi
+    
+    # Update .env file
+    sed -i "s|BEACON_NODE_URL=.*|BEACON_NODE_URL=$selected_beacon_url|g" ~/teku-validator/.env
+    
+    echo -e "${GREEN}✓ Beacon node updated${NC}"
+    echo -e "${UI_MUTED}New beacon node: ${selected_beacon_url}${NC}"
+    echo -e "${YELLOW}⚠️  Restart Teku validator to apply changes${NC}"
+    echo
+    
+    if fancy_confirm "Restart Teku validator now?" "y"; then
+        if manage_service "restart" "teku-validator"; then
+            echo -e "${GREEN}✓ Teku validator restarted with new beacon node${NC}"
+        else
+            echo -e "${RED}✗ Failed to restart Teku validator${NC}"
+        fi
+        refresh_dashboard_background
+        refresh_monitoring_dashboards
+    fi
+    
+    press_enter
+}
+
+# Remove Teku validator
+remove_teku_validator() {
+    echo -e "${CYAN}Remove Teku Validator${NC}"
+    echo "===================="
+    echo
+    echo -e "${YELLOW}⚠️  WARNING: This will completely remove the Teku validator${NC}"
+    echo "- All containers will be stopped and removed"
+    echo "- The ~/teku-validator directory will be deleted"
+    echo "- Validator keys remain in Web3signer"
+    echo
+    
+    if fancy_confirm "Are you sure you want to remove Teku validator?" "n"; then
+        # Use proper validator removal function (handles everything including lifecycle)
+        [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
+        remove_teku_validator
+        return  # The removal function handles all cleanup and dashboard refresh
+    else
+        echo -e "${UI_MUTED}Removal cancelled${NC}"
+    fi
+    
+    press_enter
 }
 
 # Update Vero fee recipient
@@ -357,8 +678,11 @@ update_vero_fee_recipient() {
     echo
     
     if fancy_confirm "Restart Vero now?" "y"; then
-        cd ~/vero && docker compose down vero && docker compose up -d vero
-        echo -e "${GREEN}✓ Vero restarted with new fee recipient${NC}"
+        if manage_service "restart" "vero"; then
+            echo -e "${GREEN}✓ Vero restarted with new fee recipient${NC}"
+        else
+            echo -e "${RED}✗ Failed to restart Vero${NC}"
+        fi
         refresh_dashboard
         refresh_monitoring_dashboards
     fi
@@ -399,17 +723,22 @@ manage_service_menu() {
             has_vero=true
         fi
         
+        local has_teku_validator=false
+        if [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]]; then
+            has_teku_validator=true
+        fi
+        
         # Build menu based on what's installed
         if [[ "$has_ethnodes" == true ]]; then
             manage_options+=("Manage ethnodes")
         fi
         
         if [[ "$has_web3signer" == true ]]; then
-            manage_options+=("Manage Web3signer")
+            manage_options+=("Manage web3signer")
         fi
         
-        if [[ "$has_vero" == true ]]; then
-            manage_options+=("Manage Vero")
+        if [[ "$has_vero" == true || "$has_teku_validator" == true ]]; then
+            manage_options+=("Manage validator")
         fi
         
         if [[ "$has_monitoring" == true ]]; then
@@ -434,8 +763,8 @@ manage_service_menu() {
             local option="${manage_options[$selection]}"
             case "$option" in
                 "Manage ethnodes") manage_nodes_menu ;;
-                "Manage Web3signer") manage_web3signer_menu ;;
-                "Manage Vero") manage_vero_menu ;;
+                "Manage web3signer") manage_web3signer_menu ;;
+                "Manage validator") manage_validator_submenu ;;
                 "Manage monitoring")
                     [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
                     manage_monitoring_menu
@@ -485,10 +814,10 @@ manage_nodes_menu() {
     while true; do
         local manage_options=(
             "Start/stop nodes"
-            "Update node"
-            "Remove node"
             "View logs"
             "View node details"
+            "Update node"
+            "Remove node"
             "Back to main menu"
         )
 
@@ -496,10 +825,10 @@ manage_nodes_menu() {
         if selection=$(fancy_select_menu "Manage Nodes" "${manage_options[@]}"); then
             case $selection in
                 0) manage_node_state ;;
-                1) update_node ;;
-                2) remove_nodes_menu ;;
-                3) view_split_screen_logs ;;
-                4) show_node_details ;;
+                1) view_split_screen_logs ;;
+                2) show_node_details ;;
+                3) update_node ;;
+                4) remove_nodes_menu ;;
                 5) return ;;  # Back to main menu
             esac
         else

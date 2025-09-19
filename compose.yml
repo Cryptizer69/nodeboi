@@ -6,8 +6,10 @@ x-logging: &logging
      max-file: "3"
      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+# Legacy compose.yml - Networks now managed by DICKS system
+# Individual services use isolated networks (ethnode1-net, ethnode2-net, etc.)
 networks:
   default:
     external: true
-    name: nodeboi-net
+    name: monitoring-net
     enable_ipv6: ${IPV6:-false}

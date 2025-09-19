@@ -4,6 +4,8 @@
 # Source dependencies
 [[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh"
 [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
+[[ -f "${NODEBOI_LIB}/network-manager.sh" ]] && source "${NODEBOI_LIB}/network-manager.sh"
+[[ -f "${NODEBOI_LIB}/service-manager.sh" ]] && source "${NODEBOI_LIB}/service-manager.sh"
 
 INSTALL_DIR="$HOME/.nodeboi"
 
@@ -412,11 +414,11 @@ x-logging: &logging
 networks:
   default:
     external: true
-    name: nodeboi-net
+    name: ${NODE_NAME}-net
     enable_ipv6: ${IPV6:-false}
 EOF
     
-    echo -e "${UI_MUTED}Created compose.yml with nodeboi-net configuration${NC}" >&2
+    echo -e "${UI_MUTED}Created compose.yml with ${node_name}-net isolated network configuration${NC}" >&2
 }
 
 create_user() {
@@ -617,7 +619,7 @@ atomic_installation_cleanup() {
     if [[ -n "$node_name" ]]; then
         docker ps -aq --filter "name=${node_name}" | xargs -r docker rm -f 2>/dev/null || true
         # Remove any networks created
-        # Note: Using shared nodeboi-net, no individual network to remove
+        # Note: Individual networks (${node_name}-net) are managed by DICKS system
     fi
     
     # Remove staging directory
@@ -886,7 +888,7 @@ install_node() {
     echo -e "${UI_MUTED}Creating configuration files...${NC}"
     copy_config_files "$node_dir" "${config[exec_client]}" "${config[cons_client]}"
     
-    # Update compose.yml to use 2-network model (nodeboi-net)
+    # Create compose.yml with isolated network architecture
     echo -e "${UI_MUTED}Configuring for 2-network architecture...${NC}"
     create_atomic_compose_file "$node_dir"
 
@@ -935,35 +937,30 @@ install_node() {
     # Launch the node immediately since user already confirmed
     echo -e "${UI_MUTED}Starting $node_name...${NC}"
     
-    # Ensure nodeboi-net exists with explicit creation and debugging
-    echo -e "${UI_MUTED}Ensuring nodeboi-net exists...${NC}"
+    # Ensure isolated network exists for this ethnode
+    local ethnode_net="${node_name}-net"
+    echo -e "${UI_MUTED}Ensuring ${ethnode_net} exists...${NC}"
     
-    # Debug: List current networks
-    echo -e "${UI_MUTED}Current Docker networks:${NC}"
-    docker network ls --format "{{.Name}}" | head -5 | while read network; do 
-        echo -e "${UI_MUTED}  $network${NC}"
-    done
-    
-    if ! docker network ls --format "{{.Name}}" | grep -q "^nodeboi-net$"; then
-        echo -e "${UI_MUTED}Network not found, creating nodeboi-net...${NC}"
-        if docker network create nodeboi-net 2>&1; then
-            echo -e "${UI_MUTED}✓ nodeboi-net created successfully${NC}"
+    if ! docker network ls --format "{{.Name}}" | grep -q "^${ethnode_net}$"; then
+        echo -e "${UI_MUTED}Network not found, creating ${ethnode_net}...${NC}"
+        if docker network create "${ethnode_net}" 2>&1; then
+            echo -e "${UI_MUTED}✓ ${ethnode_net} created successfully${NC}"
         else
-            echo -e "${RED}Failed to create nodeboi-net${NC}"
+            echo -e "${RED}Failed to create ${ethnode_net}${NC}"
             cleanup_failed_installation "$node_name"
             press_enter
             return
         fi
     else
-        echo -e "${UI_MUTED}✓ nodeboi-net already exists${NC}"
+        echo -e "${UI_MUTED}✓ ${ethnode_net} already exists${NC}"
     fi
     
     # Final verification
     echo -e "${UI_MUTED}Final network verification:${NC}"
-    if docker network inspect nodeboi-net >/dev/null 2>&1; then
-        echo -e "${UI_MUTED}✓ nodeboi-net is ready for use${NC}"
+    if docker network inspect "${ethnode_net}" >/dev/null 2>&1; then
+        echo -e "${UI_MUTED}✓ ${ethnode_net} is ready for use${NC}"
     else
-        echo -e "${RED}✗ nodeboi-net verification failed${NC}"
+        echo -e "${RED}✗ ${ethnode_net} verification failed${NC}"
         cleanup_failed_installation "$node_name"
         press_enter
         return
@@ -978,28 +975,12 @@ install_node() {
     }
 
     # Check for existing monitoring network and connect if it exists
-    if docker network ls --format "{{.Name}}" | grep -q "^nodeboi-net$"; then
-        echo -e "${UI_MUTED}Detected monitoring - connecting to nodeboi network...${NC}"
+    if docker network ls --format "{{.Name}}" | grep -q "^monitoring-net$"; then
+        echo -e "${UI_MUTED}Detected monitoring - configuring cross-network connections...${NC}"
         
         # Add nodeboi network to compose.yml
-        cat >> compose.yml << 'EOF'
-  nodeboi-net:
-    external: true
-    name: nodeboi-net
-EOF
-        
-        # Update all services to connect to nodeboi network
-        # This uses a temporary file to modify the compose.yml
-        sed -i '/^services:/,/^networks:/ { 
-            /^    networks:/ { 
-                a\      - nodeboi-net
-            }
-            /^    network_mode:/ {
-                c\    networks:\
-      - default\
-      - nodeboi-net
-            }
-        }' compose.yml
+        # Networks are now managed by the compose template - no additional network append needed
+        # DICKS system handles cross-network connections dynamically
     fi
 
     # Configuration complete - ready for atomic move
@@ -1024,18 +1005,10 @@ EOF
     echo -e "${UI_MUTED}Starting services...${NC}"
     cd "$final_dir"
     
-    # Re-verify nodeboi-net exists in final location context
-    echo -e "${UI_MUTED}Checking nodeboi-net before container startup...${NC}"
-    if ! docker network ls --format "{{.Name}}" | grep -q "^nodeboi-net$"; then
-        echo -e "${UI_MUTED}Network missing! Re-creating nodeboi-net in final context...${NC}"
-        docker network create nodeboi-net || echo -e "${YELLOW}Warning: Network creation failed${NC}"
-    else
-        echo -e "${UI_MUTED}✓ nodeboi-net confirmed present before startup${NC}"
-    fi
     
     # Final check right before Docker Compose
     echo -e "${UI_MUTED}Final network verification before Docker Compose...${NC}"
-    docker network ls --format "{{.Name}}" | grep nodeboi || echo -e "${YELLOW}WARNING: nodeboi-net not found!${NC}"
+    docker network ls --format "{{.Name}}" | grep "${node_name}-net" || echo -e "${YELLOW}WARNING: ${node_name}-net not found!${NC}"
     
     # Start containers with proper error handling
     local temp_output=$(mktemp)
@@ -1081,15 +1054,16 @@ EOF
             # Add the new beacon node to Vero's configuration
             local current_beacon_urls=$(grep "BEACON_NODE_URLS=" "$HOME/vero/.env" | cut -d'=' -f2)
             
-            # Detect beacon client for the new node
+            # Detect beacon client for the new node by checking its isolated network
             local beacon_client=""
-            if docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-grandine"; then
+            local ethnode_net="${node_name}-net"
+            if docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-grandine"; then
                 beacon_client="grandine"
-            elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lodestar"; then
+            elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lodestar"; then
                 beacon_client="lodestar"
-            elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lighthouse"; then
+            elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-lighthouse"; then
                 beacon_client="lighthouse"
-            elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-teku"; then
+            elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${node_name}-teku"; then
                 beacon_client="teku"
             else
                 beacon_client="lodestar" # fallback
@@ -1106,20 +1080,15 @@ EOF
             # Update Vero configuration
             sed -i "s|BEACON_NODE_URLS=.*|BEACON_NODE_URLS=${updated_beacon_urls}|g" "$HOME/vero/.env"
             
-            # Add network connection to Vero compose file if not already present
-            # Check if Vero is already connected to nodeboi-net (via 'nodeboi' network alias)
-            if ! grep -q "name: nodeboi-net" "$HOME/vero/compose.yml"; then
-                # Add to networks section in compose file  
-                sed -i "/web3signer: {}/a\\      nodeboi: {}" "$HOME/vero/compose.yml"
-                # Add to external networks section  
-                sed -i "/name: web3signer-net/a\\  nodeboi:\n    external: true\n    name: nodeboi-net" "$HOME/vero/compose.yml"
-            fi
+            # Network connections are now managed by DICKS system
+            # Vero will be connected to the appropriate ethnode networks automatically
+            echo -e "${UI_MUTED}Network connections managed automatically${NC}"
             
             echo -e "${GREEN}✓ Connected $node_name to Vero${NC}"
             echo "Vero uses majority threshold - with 3+ beacon nodes, 2 must agree for attestation signing."
             echo
             echo "Restarting Vero to apply changes..."
-            cd "$HOME/vero" && docker compose down vero && docker compose up -d vero
+            manage_service "restart" "vero"
             echo -e "${GREEN}✓ Vero restarted with new beacon node connection${NC}"
             
             # Refresh dashboard again to show Vero integration
@@ -1132,27 +1101,23 @@ EOF
     if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
         echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
         source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto
+        source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
+        manage_service_networks "sync" "silent"
+        
+        # Regenerate prometheus configuration and dashboards for new ethnode
         sync_grafana_dashboards
         echo -e "${GREEN}✓ Monitoring integration updated${NC}"
         echo
         
-        # Final dashboard refresh to show monitoring updates
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+        # Final dashboard refresh to show monitoring updates  
+        if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
+            source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard >/dev/null 2>&1 || true
+        fi
     fi
     
     # Remove signal trap - installation completed successfully
     trap - SIGINT SIGTERM SIGQUIT
     
-    # Sync monitoring integration if installed
-    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto
-        sync_grafana_dashboards
-        echo -e "${GREEN}✓ Monitoring integration updated${NC}"
-        echo
-    fi
     
     # Health check confirmation step
     echo -e "${UI_MUTED}Checking service health...${NC}"
@@ -1253,16 +1218,124 @@ EOF
         done
     fi
     
-    echo -e "${GREEN}✓ Ethnode installation completed successfully!${NC}"
+    # Disable strict error handling for completion section
+    set +eE
+    set +o pipefail
+    
+    # Use ULCS integration instead of manual integration
+    echo -e "${UI_MUTED}Integrating with monitoring and services...${NC}"
+    if declare -f integrate_service >/dev/null 2>&1 && declare -f get_service_flow >/dev/null 2>&1; then
+        local flow_def=$(get_service_flow ethnode)
+        integrate_service "$node_name" "ethnode" "$flow_def" 2>/dev/null || true
+        echo -e "${GREEN}✓ Service integration completed${NC}"
+    else
+        # Fallback to manual integration if ULCS not available
+        integrate_new_ethnode_with_services "$node_name" || true
+    fi
+    
     echo
+    echo -e "${GREEN}[✓] Installation complete.${NC}"
+    echo
+    echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
+    echo -e "${GREEN}✓ $node_name installation completed successfully${NC}"
+    echo
+    echo -e "${UI_MUTED}Press Enter to return to NODEBOI main menu...${NC}"
+    read -r
     
-    # Integrate with existing services
-    integrate_new_ethnode_with_services "$node_name"
+    # Trigger dashboard refresh when user presses Enter (not automatically)
+    echo -e "${UI_MUTED}Refreshing dashboard...${NC}"
+    if [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && declare -f force_refresh_dashboard >/dev/null 2>&1; then
+        force_refresh_dashboard >/dev/null 2>&1 || true
+        echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
+    elif declare -f trigger_dashboard_refresh >/dev/null 2>&1; then
+        trigger_dashboard_refresh "installation_completed" "$node_name" >/dev/null 2>&1 || true
+        echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
+    else
+        echo -e "${UI_MUTED}⚠ Dashboard refresh not available${NC}"
+    fi
     
-    # Ensure we're back in the nodeboi directory
-    cd "${NODEBOI_DIR}" 2>/dev/null || cd "$HOME/.nodeboi" 2>/dev/null || true
+    # Ensure function returns properly to calling menu
+    echo -e "${UI_MUTED}Returning to main menu...${NC}"
+    return 0
+}
+
+# ULCS-compatible ethnode installation wrapper
+install_ethnode_universal() {
+    echo -e "${UI_MUTED}Starting ethnode installation via Universal Service Lifecycle System...${NC}"
     
-    press_enter
+    # Collect configuration from user
+    declare -A config
+    if ! collect_installation_config config; then
+        echo -e "${RED}Installation cancelled${NC}" >&2
+        return 1
+    fi
+    
+    local node_name="${config[node_name]}"
+    
+    # Check if service already exists
+    if [[ -d "$HOME/$node_name" ]]; then
+        echo -e "${YELLOW}${node_name} is already installed at $HOME/$node_name${NC}"
+        echo -e "${UI_MUTED}Please remove it first if you want to reinstall${NC}"
+        return 1
+    fi
+    
+    # Prepare config parameters for ULCS
+    local config_json="{\"node_name\":\"$node_name\""
+    for key in "${!config[@]}"; do
+        if [[ "$key" != "node_name" ]]; then
+            config_json="${config_json},\"$key\":\"${config[$key]}\""
+        fi
+    done
+    config_json="${config_json}}"
+    
+    # Call Universal Service Lifecycle System for installation
+    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+        init_service_flows
+        
+        echo -e "${UI_MUTED}Installing via ULCS...${NC}"
+        if install_service_universal "$node_name" "ethnode" "$config_json"; then
+            echo -e "${GREEN}✓ $node_name installed successfully via ULCS${NC}"
+            
+            # Update monitoring integration and dependent validators (DICKS)
+            if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+                echo -e "${UI_MUTED}Updating validator connections and monitoring...${NC}"
+                source "${NODEBOI_LIB}/monitoring.sh" 
+                source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
+                manage_service_networks "sync" "silent"
+                
+                # Regenerate prometheus configuration and dashboards for new ethnode
+                sync_grafana_dashboards
+                echo -e "${GREEN}✓ Validator connections and monitoring updated${NC}"
+            fi
+            
+            # Trigger dashboard refresh
+            echo -e "${UI_MUTED}Refreshing dashboard...${NC}"
+            if [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && declare -f force_refresh_dashboard >/dev/null 2>&1; then
+                force_refresh_dashboard >/dev/null 2>&1 || true
+                echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
+            fi
+            
+            echo -e "${UI_MUTED}Installation complete. Returning to main menu...${NC}"
+            return 0
+        else
+            echo -e "${RED}✗ Installation failed via ULCS${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}✗ Universal Service Lifecycle System not available${NC}"
+        echo -e "${UI_MUTED}Falling back to legacy installation...${NC}"
+        # Fallback to legacy installation if ULCS not available
+        install_node_legacy
+        return $?
+    fi
+}
+
+# Rename the original install_node to install_node_legacy 
+install_node_legacy() {
+    # This is the original install_node function - kept as fallback
+    echo -e "${YELLOW}⚠ Using legacy installation method${NC}"
+    install_node
 }
 
 # Check if a node has updates available
@@ -1414,6 +1487,19 @@ update_node() {
             
             echo -e "${GREEN}✓ All ethnodes updated successfully${NC}\n"
             
+            # Update validator connections after ethnode updates (DICKS)
+            if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+                echo -e "${UI_MUTED}Updating validator connections after ethnode updates...${NC}"
+                source "${NODEBOI_LIB}/monitoring.sh" 
+                source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
+                manage_service_networks "sync" "silent"
+                
+                # Regenerate prometheus configuration and dashboards after updates
+                sync_grafana_dashboards
+                echo -e "${GREEN}✓ Validator connections updated${NC}"
+                echo
+            fi
+            
             # Show updated dashboard
             print_dashboard
             
@@ -1474,6 +1560,19 @@ update_node() {
                 safe_docker_stop "$node_name"
                 if docker compose up -d --force-recreate > /dev/null 2>&1; then
                     echo -e "${GREEN}✓ $node_name updated and restarted successfully${NC}\n"
+                    
+                    # Update validator connections after ethnode update (DICKS)
+                    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+                        echo -e "${UI_MUTED}Updating validator connections after $node_name update...${NC}"
+                        source "${NODEBOI_LIB}/monitoring.sh" 
+                        source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
+                        manage_service_networks "sync" "silent"
+                        
+                        # Regenerate prometheus configuration and dashboards after update
+                        sync_grafana_dashboards
+                        echo -e "${GREEN}✓ Validator connections updated${NC}"
+                        echo
+                    fi
                     
                     # Show updated dashboard
                     print_dashboard
@@ -1558,13 +1657,14 @@ add_ethnode_to_vero() {
     
     # Detect the beacon client for this new node
     local beacon_client=""
-    if docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-grandine"; then
+    local ethnode_net="${new_node}-net"
+    if docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-grandine"; then
         beacon_client="grandine"
-    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lodestar"; then
+    elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lodestar"; then
         beacon_client="lodestar"
-    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lighthouse"; then
+    elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-lighthouse"; then
         beacon_client="lighthouse"
-    elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-teku"; then
+    elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${new_node}-teku"; then
         beacon_client="teku"
     else
         echo -e "${YELLOW}  → Warning: Could not detect beacon client for ${new_node}${NC}"

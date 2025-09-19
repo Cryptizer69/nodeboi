@@ -46,16 +46,31 @@ fancy_select_menu() {
         local refresh_indicator=""
         local lock_file="${DASHBOARD_CACHE_LOCK:-$HOME/.nodeboi/cache/dashboard.lock}"
         
-        # Check if background refresh is running
+        # Check if background refresh is running - with better race condition handling
         if [[ -f "$lock_file" ]]; then
             local lock_pid=$(cat "$lock_file" 2>/dev/null)
             if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
                 refresh_indicator="${UI_MUTED}◐ Refreshing...${UI_RESET}"
+            else
+                # Clean up stale lock file
+                rm -f "$lock_file" 2>/dev/null || true
             fi
         fi
         
         if [[ -f "$dashboard_cache_file" ]]; then
-            current_dashboard=$(cat "$dashboard_cache_file" 2>/dev/null)
+            # Read file content safely to avoid null byte warnings with Unicode characters
+            current_dashboard=""
+            if [[ -s "$dashboard_cache_file" ]]; then
+                # Use while loop to read file content without null byte warnings
+                {
+                    local line
+                    while IFS= read -r line || [[ -n "$line" ]]; do
+                        current_dashboard+="$line"$'\n'
+                    done
+                } < "$dashboard_cache_file" 2>/dev/null
+                # Remove trailing newline
+                current_dashboard="${current_dashboard%$'\n'}"
+            fi
         else
             current_dashboard="NODEBOI Dashboard
 =================
@@ -107,45 +122,12 @@ fancy_select_menu() {
         
         echo -e "\n${UI_DIM}Use ↑/↓ arrows or j/k, Enter to select, 'q' to quit${UI_RESET}" >&2
         
-        # Read key with timeout to allow auto-refresh when background processes complete
-        local was_refreshing="$refresh_indicator"
-        local timeout=30  # Default long timeout when no background processes
-        
-        # Check if background refresh is running to determine appropriate timeout
-        local lock_file="${DASHBOARD_CACHE_LOCK:-$HOME/.nodeboi/cache/dashboard.lock}"
-        if [[ -f "$lock_file" ]]; then
-            local lock_pid=$(cat "$lock_file" 2>/dev/null)
-            if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-                timeout=2  # Short timeout when background process is active
-            fi
-        fi
+        # Read key with longer timeout to prevent excessive redrawing
+        local timeout=10  # Fixed timeout - no special handling for background processes
         
         if ! IFS= read -rsn1 -t "$timeout" key; then
-            # Timeout occurred - check if there's actually something to refresh
-            local current_refresh=""
-            if [[ -f "$lock_file" ]]; then
-                local lock_pid=$(cat "$lock_file" 2>/dev/null)
-                if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-                    current_refresh="${UI_MUTED}◐ Refreshing...${UI_RESET}"
-                fi
-            fi
-            
-            # Only redraw if refresh status actually changed
-            if [[ "$was_refreshing" != "$current_refresh" ]]; then
-                continue  # Refresh status changed, redraw
-            fi
-            
-            # If no background process is running and status hasn't changed, no need to redraw
-            if [[ -z "$current_refresh" && -z "$was_refreshing" ]]; then
-                continue  # Keep waiting for input without redrawing
-            fi
-            
-            # If background process is still running, continue checking (but less frequently)
-            if [[ -n "$current_refresh" ]]; then
-                continue  # Keep checking background process
-            fi
-            
-            # In all other cases, just keep waiting
+            # Timeout occurred - only refresh if dashboard content might have changed
+            # This reduces the frequency of unnecessary redraws that cause flickering
             continue
         fi
         
@@ -221,8 +203,8 @@ fancy_text_input() {
     
     if declare -f print_dashboard >/dev/null 2>&1; then
         # If we have access to print_dashboard, use it directly
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" 2>/dev/null
-        [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" 2>/dev/null
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" >/dev/null 2>&1
+        [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" >/dev/null 2>&1
         cached_dashboard=$(print_dashboard 2>/dev/null)
     elif [[ -f "$dashboard_cache_file" ]]; then
         # Fallback: use the cached dashboard file (for scripts called from nodeboi)

@@ -265,20 +265,28 @@ remove_nodes_menu() {
         
         if fancy_confirm "Remove $node_to_remove? This cannot be undone!" "n"; then
             echo -e "\n${UI_MUTED}Removing $node_to_remove...${NC}\n"
-            remove_node "$node_to_remove"
             
-            # Update network connections after removal (DICKS)
-            if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-                echo -e "${UI_MUTED}Updating service connections...${NC}"
-                set +e  # Temporarily disable exit on error for monitoring call
-                source "${NODEBOI_LIB}/monitoring.sh" 
-                docker_intelligent_connecting_kontainer_system --auto > /dev/null 2>&1
-                set -e  # Re-enable exit on error
-                echo -e "${UI_MUTED}Service connections updated.${NC}"
+            # Use ULCS for removal
+            if remove_ethnode_universal "$node_to_remove"; then
+                echo -e "${GREEN}Node $node_to_remove removed successfully via ULCS${NC}"
+            else
+                echo -e "${RED}Removal failed via ULCS, trying legacy method...${NC}"
+                remove_node "$node_to_remove"
+                
+                # Update network connections after legacy removal
+                if [[ -f "${NODEBOI_LIB}/network-manager.sh" ]]; then
+                    echo -e "${UI_MUTED}Updating service connections...${NC}"
+                    set +e  # Temporarily disable exit on error for network management call
+                    source "${NODEBOI_LIB}/network-manager.sh" 
+                    manage_service_networks silent > /dev/null 2>&1
+                    set -e  # Re-enable exit on error
+                    echo -e "${UI_MUTED}Service connections updated.${NC}"
+                fi
+                
+                echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
             fi
             
             force_refresh_dashboard
-            echo -e "${GREEN}Node $node_to_remove removed successfully${NC}"
         else
             echo -e "${GREEN}Removal cancelled${NC}"
         fi
@@ -286,6 +294,37 @@ remove_nodes_menu() {
     
     press_enter
 }
+
+# ULCS-compatible ethnode removal function
+remove_ethnode_universal() {
+    local node_to_remove="$1"
+    
+    if [[ -z "$node_to_remove" ]]; then
+        echo -e "${RED}Error: Node name required${NC}"
+        return 1
+    fi
+    
+    echo -e "${UI_MUTED}Starting ethnode removal via Universal Service Lifecycle System...${NC}"
+    
+    # Call Universal Service Lifecycle System for removal
+    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+        init_service_flows
+        
+        echo -e "${UI_MUTED}Removing via ULCS...${NC}"
+        if remove_service_universal "$node_to_remove" "true" "false"; then
+            echo -e "${GREEN}✓ $node_to_remove removed successfully via ULCS${NC}"
+            return 0
+        else
+            echo -e "${RED}✗ Removal failed via ULCS${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}✗ Universal Service Lifecycle System not available${NC}"
+        return 1
+    fi
+}
+
 check_node_health() {
     local node_dir=$1
     local node_name=$(basename "$node_dir")
@@ -607,7 +646,7 @@ check_web3signer_health() {
     if [[ "$host_ip" == "0.0.0.0" ]]; then
         access_indicator="${RED}[A]${NC}"
     elif [[ "$host_ip" != "127.0.0.1" ]]; then
-        access_indicator="${YELLOW}[L]${NC}"
+        access_indicator="${UI_WARNING}[L]${UI_RESET}"
     else
         access_indicator="${GREEN}[M]${NC}"
     fi
@@ -691,7 +730,7 @@ check_vero_health() {
     if [[ "$bind_ip" == "0.0.0.0" ]]; then
         access_indicator="${RED}[A]${NC}"
     elif [[ "$bind_ip" != "127.0.0.1" ]]; then
-        access_indicator="${YELLOW}[L]${NC}"
+        access_indicator="${UI_WARNING}[L]${UI_RESET}"
     else
         access_indicator="${GREEN}[M]${NC}"
     fi
@@ -797,6 +836,151 @@ print(result)
     echo
 }
 
+# Teku validator health check  
+check_teku_validator_health() {
+    local service_dir="$1"
+    local service_name=$(basename "$service_dir")
+    
+    # Get configuration
+    local metrics_port=$(grep "TEKU_METRICS_PORT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local network=$(grep "ETH2_NETWORK=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local version=$(grep "TEKU_VERSION=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local beacon_urls=$(grep "BEACON_NODE_URL=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local bind_ip=$(grep "HOST_BIND_IP=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    
+    # Default values
+    [[ -z "$metrics_port" ]] && metrics_port="8008"
+    [[ -z "$bind_ip" ]] && bind_ip="127.0.0.1"
+    
+    # Check container status
+    local containers_running=false
+    if cd "$service_dir" 2>/dev/null; then
+        # Check if teku-validator service is running
+        if docker compose ps --services --filter status=running 2>/dev/null | grep -q "teku-validator"; then
+            containers_running=true
+        fi
+    fi
+    
+    # Initialize status variables
+    local teku_check="${RED}✗${NC}"
+    local access_indicator="[M]"
+    
+    # Determine access indicator
+    if [[ "$bind_ip" == "0.0.0.0" ]]; then
+        access_indicator="${RED}[A]${NC}"
+    elif [[ "$bind_ip" != "127.0.0.1" ]]; then
+        access_indicator="${UI_WARNING}[L]${UI_RESET}"
+    else
+        access_indicator="${GREEN}[M]${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        # Check Teku validator metrics endpoint
+        if curl -s "http://localhost:${metrics_port}/metrics" >/dev/null 2>&1; then
+            teku_check="${GREEN}✓${NC}"
+        fi
+    fi
+    
+    # Check for updates if running
+    local teku_update_indicator=""
+    if [[ "$containers_running" == true ]] && [[ -n "$version" ]]; then
+        teku_update_indicator=$(check_service_update "teku-validator" "$version")
+    fi
+    
+    # Display status
+    local status_indicator="${GREEN}●${NC}"
+    if [[ "$containers_running" == false ]]; then
+        status_indicator="${RED}●${NC}"
+    fi
+    
+    if [[ "$containers_running" == true ]]; then
+        echo -e "  $status_indicator teku-validator ($network) $access_indicator"
+        # Check beacon node connectivity first to determine validator status
+        local reachable_count=0
+        local beacon_url_list=""
+        
+        # Parse beacon URLs if configured
+        if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
+            beacon_url_list=$(echo "$beacon_urls" | tr ',' ' ')
+            for url in $beacon_url_list; do
+                # Extract the container name from the URL (e.g., ethnode1-grandine:5052 from http://ethnode1-grandine:5052)
+                local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:.*||g')
+                
+                # Check if container is running
+                if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+                    ((reachable_count++))
+                fi
+            done
+        fi
+        
+        # Check attestation status from Teku validator logs and metrics (more reliable)
+        local validator_status="not attesting"
+        local validator_indicator="${RED}✗${NC}"
+        
+        # Check recent logs for published attestations (primary method)
+        local recent_attestation_logs=$(docker logs teku-validator --tail=20 --since=5m 2>/dev/null | grep -c "Published attestation" || echo "0")
+        
+        # Also check metrics as backup if available
+        local metrics_port=$(grep "TEKU_METRICS_PORT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+        local metrics_check=0
+        if [[ -n "$metrics_port" ]]; then
+            metrics_check=$(curl -s "http://localhost:${metrics_port}/metrics" 2>/dev/null | grep -c "publish_attestation.*success" || echo "0")
+        fi
+        
+        # Only mark as attesting if actually publishing attestations
+        if [[ "$recent_attestation_logs" -gt 0 ]] || [[ "$metrics_check" -gt 0 ]]; then
+            validator_status="attesting"
+            validator_indicator="${GREEN}✓${NC}"
+        fi
+        
+        printf "     ${validator_indicator} %-20s (%s)\n" "$validator_status" "$(display_version "teku-validator" "$version")"
+        
+        # Show beacon node connection if configured
+        if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
+            printf "     %s %-20s\n" "" "Connected to:"
+            
+            # Display beacon node connection status
+            for url in $beacon_url_list; do
+                # Extract the container name from the URL (e.g., ethnode1-grandine:5052 from http://ethnode1-grandine:5052)
+                local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:.*||g')
+                local port=$(echo "$url" | sed 's|.*:||g')
+                
+                # Create display name: ethnode1-grandine -> ethnode1-Grandine
+                # Split on dash and capitalize the client name part
+                local node_part=$(echo "$container_name" | cut -d'-' -f1)
+                local client_part=$(echo "$container_name" | cut -d'-' -f2)
+                local display_name="$node_part"
+                if [[ -n "$client_part" ]]; then
+                    # Capitalize first letter of client name
+                    local capitalized_client="$(echo "$client_part" | sed 's/^./\U&/')"
+                    display_name="$node_part-$capitalized_client"
+                fi
+                
+                # Debug: skip empty URLs
+                [[ -z "$display_name" || -z "$container_name" ]] && continue
+                
+                # Check if container is running
+                local is_healthy=false
+                if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+                    is_healthy=true
+                fi
+                
+                if [[ "$is_healthy" == "true" ]]; then
+                    printf "     ${GREEN}✓${NC} %s\n" "$display_name"
+                else
+                    printf "     ${RED}✗${NC} %s ${UI_MUTED}(waiting)${NC}\n" "$display_name"
+                fi
+            done
+        else
+            printf "     ${YELLOW}⚠️  No beacon nodes configured${NC}\n"
+        fi
+    else
+        echo -e "  ${status_indicator} teku-validator (${network}) $access_indicator"
+        echo -e "     ${RED}● Stopped${NC}"
+    fi
+    echo
+}
+
 # Stub functions for missing dependencies to prevent delays
 cleanup_version_cache() { return 0; }
 check_service_update() { echo ""; }
@@ -847,6 +1031,13 @@ generate_dashboard() {
         found=true
     fi
     
+    # Teku validator (singleton)
+    if [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]]; then
+        check_teku_validator_health "$HOME/teku-validator"
+        validator_found=true
+        found=true
+    fi
+    
     # Check for monitoring and display it LAST
     if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" && -f "$HOME/monitoring/compose.yml" ]]; then
         # Monitoring functions are pre-loaded, just call them
@@ -860,7 +1051,7 @@ generate_dashboard() {
     else
         echo -e "${UI_MUTED}─────────────────────────────${NC}"
         echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC} ${UI_MUTED}Update${NC}"
-        echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${YELLOW}[L]${NC} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All networks${NC}"
+        echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${UI_WARNING}[L]${UI_RESET} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All networks${NC}"
     fi
     # Restore original CHECK_UPDATES setting
     CHECK_UPDATES="$original_check_updates"
@@ -1098,10 +1289,15 @@ manage_node_state() {
             echo -e "\n${YELLOW}Starting all stopped nodes...${NC}\n"
             for i in "${!nodes[@]}"; do
                 if [[ "${node_status[$i]}" == "Stopped" ]]; then
-                    echo -e "${UI_MUTED}Starting ${nodes[$i]}...${NC}"
-                    cd "$HOME/${nodes[$i]}" && docker compose up -d > /dev/null 2>&1
+                    echo -e "${UI_MUTED}Starting ${nodes[$i]} via ULCS...${NC}"
+                    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+                        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                        start_service_universal "${nodes[$i]}" > /dev/null 2>&1
+                    else
+                        # Fallback to legacy method
+                        cd "$HOME/${nodes[$i]}" && docker compose up -d > /dev/null 2>&1
+                    fi
                     force_refresh_dashboard
-                    [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
                 fi
             done
             echo -e "${GREEN}All stopped nodes started${NC}"
@@ -1111,7 +1307,14 @@ manage_node_state() {
             echo -e "\n${UI_MUTED}Stopping all running nodes...${NC}\n"
             for i in "${!nodes[@]}"; do
                 if [[ "${node_status[$i]}" == "Running" ]]; then
-                    safe_docker_stop "${nodes[$i]}"
+                    echo -e "${UI_MUTED}Stopping ${nodes[$i]} via ULCS...${NC}"
+                    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+                        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                        stop_service_universal "${nodes[$i]}" > /dev/null 2>&1
+                    else
+                        # Fallback to legacy method
+                        safe_docker_stop "${nodes[$i]}"
+                    fi
                     force_refresh_dashboard
                 fi
             done
@@ -1138,17 +1341,40 @@ manage_node_state() {
             if action_selection=$(fancy_select_menu "Actions for $node_name" "${action_options[@]}"); then
                 case $action_selection in
                     0)
-                        echo -e "\n${YELLOW}Starting $node_name...${NC}"
-                        cd "$node_dir" && docker compose up -d > /dev/null 2>&1
+                        echo -e "\n${YELLOW}Starting $node_name via ULCS...${NC}"
+                        if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+                            source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                            if start_service_universal "$node_name"; then
+                                echo -e "${GREEN}$node_name started successfully${NC}"
+                            else
+                                echo -e "${RED}Failed to start $node_name via ULCS, trying legacy method...${NC}"
+                                cd "$node_dir" && docker compose up -d > /dev/null 2>&1
+                                echo -e "${GREEN}$node_name started${NC}"
+                            fi
+                        else
+                            # Fallback to legacy method
+                            cd "$node_dir" && docker compose up -d > /dev/null 2>&1
+                            echo -e "${GREEN}$node_name started${NC}"
+                        fi
                         force_refresh_dashboard
-                        [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh" && refresh_monitoring_dashboards > /dev/null 2>&1
-                        echo -e "${GREEN}$node_name started${NC}"
                         ;;
                     1)
-                        echo -e "\n${UI_MUTED}Stopping $node_name...${NC}"
-                        safe_docker_stop "$node_name"
+                        echo -e "\n${UI_MUTED}Stopping $node_name via ULCS...${NC}"
+                        if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
+                            source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                            if stop_service_universal "$node_name"; then
+                                echo -e "${GREEN}$node_name stopped successfully${NC}"
+                            else
+                                echo -e "${RED}Failed to stop $node_name via ULCS, trying legacy method...${NC}"
+                                safe_docker_stop "$node_name"
+                                echo -e "${GREEN}$node_name stopped${NC}"
+                            fi
+                        else
+                            # Fallback to legacy method
+                            safe_docker_stop "$node_name"
+                            echo -e "${GREEN}$node_name stopped${NC}"
+                        fi
                         force_refresh_dashboard
-                        echo -e "${GREEN}$node_name stopped${NC}"
                         ;;
                     2)
                         clear

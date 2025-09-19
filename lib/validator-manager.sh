@@ -4,9 +4,30 @@
 # Source dependencies
 [[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh"
 [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh"
+[[ -f "${NODEBOI_LIB}/network-manager.sh" ]] && source "${NODEBOI_LIB}/network-manager.sh"
 
 INSTALL_DIR="$HOME/.nodeboi"
 
+# Clean up validator network if no validator services are using it
+cleanup_validator_network() {
+    local validator_services=()
+    
+    # Check for installed validator services (directories with .env)
+    [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]] && validator_services+=("vero")
+    [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]] && validator_services+=("teku-validator")  
+    [[ -d "$HOME/web3signer" && -f "$HOME/web3signer/.env" ]] && validator_services+=("web3signer")
+    
+    # Also check for running validator containers (in case directories were removed but containers still exist)
+    local running_validators=$(docker ps --format "{{.Names}}" | grep -E "^(vero|teku-validator|web3signer)" || true)
+    
+    # If no validator services exist and no validator containers running, remove validator-net
+    if [[ ${#validator_services[@]} -eq 0 && -z "$running_validators" ]]; then
+        if docker network ls --format "{{.Name}}" | grep -q "^validator-net$"; then
+            echo -e "${UI_MUTED}Removing orphaned validator-net...${NC}"
+            docker network rm validator-net 2>/dev/null || true
+        fi
+    fi
+}
 
 # Interactive key import function
 interactive_key_import() {
@@ -89,7 +110,7 @@ interactive_key_import() {
                             echo "✓ Key import completed successfully!"
                             echo
                             echo "Restarting Web3signer to recognize new keys..."
-                            docker compose down web3signer && docker compose up -d web3signer
+                            manage_service "restart" "web3signer"
                             echo "✓ Web3signer restarted"
                             
                             echo "Refreshing dashboard..."
@@ -406,12 +427,9 @@ install_web3signer() {
     fi
     echo
     
-    # Sync Grafana dashboards if monitoring is installed
-    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Syncing Grafana dashboards...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" && sync_dashboards "$HOME/monitoring/grafana/dashboards"
-        echo -e "${GREEN}✓ Grafana dashboards updated${NC}"
-        echo
+    # Refresh monitoring dashboards and Prometheus configuration
+    if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
+        source "${NODEBOI_LIB}/grafana-dashboard-management.sh" && refresh_monitoring_dashboards
     fi
     
     # Disable error traps - installation completed successfully
@@ -495,10 +513,6 @@ install_vero() {
     # Set up traps for ALL types of failures
     trap 'cleanup_failed_vero_installation' ERR INT TERM
     
-    echo -e "${CYAN}${BOLD}Install Vero Validator${NC}"
-    echo "======================="
-    echo
-    
     # Singleton check
     if [[ -d "$service_dir" ]]; then
         echo -e "${YELLOW}Vero is already installed${NC}"
@@ -516,14 +530,20 @@ install_vero() {
         return 1
     fi
     
+    # Show header only after all checks pass
+    echo -e "${CYAN}${BOLD}Install Vero Validator${NC}"
+    echo "======================="
+    echo
+    
     # Auto-discover available ethnode networks
     local available_ethnodes=()
     for dir in "$HOME"/ethnode*; do
         if [[ -d "$dir" && -f "$dir/.env" ]]; then
             local node_name=$(basename "$dir")
             
-            # Check if nodeboi-net exists (all ethnodes use this network)
-            if docker network ls --format "{{.Name}}" | grep -q "^nodeboi-net$"; then
+            # Check if isolated ethnode network exists
+            local ethnode_net="${node_name}-net"
+            if docker network ls --format "{{.Name}}" | grep -q "^${ethnode_net}$"; then
                 available_ethnodes+=("$node_name")
             fi
         fi
@@ -557,7 +577,7 @@ install_vero() {
     done
     echo
     
-    # Ask which beacon nodes to connect to
+    # Ask which beacon nodes to connect to using fancy menu
     local selected_ethnodes=()
     
     if [[ ${#available_ethnodes[@]} -eq 1 ]]; then
@@ -571,31 +591,31 @@ install_vero() {
         selected_ethnodes=("${available_ethnodes[0]}")
         press_enter
     else
-        echo "Select beacon nodes to connect to (space-separated numbers, e.g., '1 3'):"
-        for i in "${!available_ethnodes[@]}"; do
-            echo "  $((i+1))) ${available_ethnodes[$i]}"
+        # Create menu options with individual nodes + "All beacon nodes"
+        local menu_options=()
+        for ethnode in "${available_ethnodes[@]}"; do
+            menu_options+=("$ethnode")
         done
-        echo
-        echo "Press Enter without typing to select all nodes"
-        read -p "Selection: " -a choices
+        menu_options+=("All beacon nodes")
         
-        # If no choices provided, select all available nodes
-        if [[ ${#choices[@]} -eq 0 ]]; then
-            selected_ethnodes=("${available_ethnodes[@]}")
-            echo "Selected all available beacon nodes: ${selected_ethnodes[*]}"
-        else
-            # Process user selections
-            for choice in "${choices[@]}"; do
-                if [[ $choice -ge 1 && $choice -le ${#available_ethnodes[@]} ]]; then
-                    selected_ethnodes+=("${available_ethnodes[$((choice-1))]}")
-                fi
-            done
+        # Ensure UI functions are available
+        [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
+        
+        # Show fancy menu for selection
+        local selection
+        if selection=$(fancy_select_menu "Beacon Node Selection" "${menu_options[@]}"); then
+            local selected_option="${menu_options[$selection]}"
             
-            if [[ ${#selected_ethnodes[@]} -eq 0 ]]; then
-                echo -e "${RED}No valid beacon nodes selected${NC}"
-                echo "Please enter numbers between 1 and ${#available_ethnodes[@]}"
-                return 1
+            if [[ "$selected_option" == "All beacon nodes" ]]; then
+                selected_ethnodes=("${available_ethnodes[@]}")
+                echo -e "${GREEN}Selected all available beacon nodes: ${selected_ethnodes[*]}${NC}"
+            else
+                selected_ethnodes=("$selected_option")
+                echo -e "${GREEN}Selected beacon node: $selected_option${NC}"
             fi
+        else
+            echo -e "${UI_MUTED}No selection made${NC}"
+            return 1
         fi
     fi
     
@@ -656,15 +676,27 @@ Fee recipient address:" \
     # Create compose file
     create_vero_compose_file "$service_dir" "${selected_ethnodes[@]}"
     
-    echo -e "${GREEN}✓ Vero created successfully!${NC}"
-    echo -e "${UI_MUTED}Starting Vero validator...${NC}"
+    echo -e "${GREEN}✓ Vero installed successfully!${NC}"
+    echo
     
-    # Start Vero automatically after installation
-    cd "$service_dir"
-    if docker compose up -d; then
-        echo -e "${GREEN}✓ Vero started successfully!${NC}"
+    # Ask user if they want to start the validator now
+    local launch_choice=""
+    launch_choice=$(fancy_text_input "Launch Validator" \
+        "Do you want to launch Vero validator right now? (y/n):" \
+        "" \
+        "")
+    
+    if [[ "$launch_choice" == "y" || "$launch_choice" == "" ]]; then
+        echo -e "${UI_MUTED}Starting Vero validator...${NC}"
+        
+        # Start Vero (safety warning handled by manage_service)
+        if manage_service "up" "vero"; then
+            echo -e "${GREEN}✓ Vero started successfully!${NC}"
+        else
+            echo -e "${YELLOW}⚠ Vero created but failed to start - you can start it manually later${NC}"
+        fi
     else
-        echo -e "${YELLOW}⚠ Vero created but failed to start - you can start it manually later${NC}"
+        echo -e "${UI_MUTED}Vero validator ready to launch manually from manage menu${NC}"
     fi
     echo -e "${UI_MUTED}Directory: ${service_dir}${NC}"
     echo -e "${UI_MUTED}Connected to Web3signer: web3signer${NC}"
@@ -680,11 +712,9 @@ Fee recipient address:" \
     set +o pipefail
     trap - ERR INT TERM
     
-    # Sync Grafana dashboards if monitoring is installed
-    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Syncing Grafana dashboards...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" && sync_dashboards "$HOME/monitoring/grafana/dashboards"
-        echo -e "${GREEN}✓ Grafana dashboards updated${NC}"
+    # Refresh monitoring dashboards and Prometheus configuration
+    if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
+        source "${NODEBOI_LIB}/grafana-dashboard-management.sh" && refresh_monitoring_dashboards
     fi
     
     # Refresh dashboard cache to show new Vero installation
@@ -1164,14 +1194,15 @@ create_vero_env_file() {
         # Detect beacon client by checking Docker network containers
         local beacon_client=""
         
-        # Check which beacon client is running (all ethnodes use nodeboi-net)
-        if docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-grandine"; then
+        # Check which beacon client is running in isolated ethnode network
+        local ethnode_net="${ethnode}-net"
+        if docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-grandine"; then
             beacon_client="grandine"
-        elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lodestar"; then
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lodestar"; then
             beacon_client="lodestar"
-        elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lighthouse"; then
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lighthouse"; then
             beacon_client="lighthouse"
-        elif docker network inspect "nodeboi-net" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-teku"; then
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-teku"; then
             beacon_client="teku"
         else
             # Fallback - assume lodestar for backward compatibility
@@ -1217,8 +1248,8 @@ BEACON_NODE_URLS=${beacon_urls}
 WEB3SIGNER_URL=http://web3signer:9000
 
 # Consensus settings - how many beacon nodes must agree on attestation data
-# Uncomment and set this value if you have multiple beacon nodes
-#ATTESTATION_CONSENSUS_THRESHOLD=1
+# Set to number of beacon nodes for maximum safety, or 1 for single node setups
+ATTESTATION_CONSENSUS_THRESHOLD=1
 
 # =============================================================================
 # VALIDATOR CONFIGURATION
@@ -1272,20 +1303,22 @@ services:
       "--graffiti=\${GRAFFITI}",
       "--metrics-address=0.0.0.0",
       "--metrics-port=\${VERO_METRICS_PORT}",
-      "--log-level=\${LOG_LEVEL}"
+      "--log-level=\${LOG_LEVEL}",
+      "--attestation-consensus-threshold=\${ATTESTATION_CONSENSUS_THRESHOLD:-1}",
+      "--enable-doppelganger-detection"
     ]
     networks:
-      - nodeboi
-      - web3signer
+      - validator-net
+      - web3signer-net$(for ethnode in "${ethnodes[@]}"; do echo ""; echo "      - ${ethnode}-net"; done)
     <<: *logging
 
 networks:
-  nodeboi:
+  validator-net:
     external: true
-    name: nodeboi-net
-  web3signer:
+    name: validator-net
+  web3signer-net:
     external: true
-    name: web3signer-net
+    name: web3signer-net$(for ethnode in "${ethnodes[@]}"; do echo ""; echo "  ${ethnode}-net:"; echo "    external: true"; echo "    name: ${ethnode}-net"; done)
 EOF
 }
 
@@ -1349,13 +1382,13 @@ update_web3signer() {
     
     # Stop, pull, and restart
     echo -e "${UI_MUTED}Stopping Web3signer...${NC}"
-    cd ~/web3signer && docker compose stop web3signer
+    manage_service "down" "web3signer"
     
     echo -e "${UI_MUTED}Pulling new version...${NC}"
     cd ~/web3signer && docker compose pull web3signer
     
     echo -e "${UI_MUTED}Starting Web3signer with new version...${NC}"
-    cd ~/web3signer && docker compose up -d web3signer
+    manage_service "up" "web3signer"
     
     # Wait a moment and check health
     sleep 5
@@ -1406,25 +1439,125 @@ remove_vero() {
         return 0
     fi
     
-    echo -e "${UI_MUTED}Stopping and removing Vero containers...${NC}"
-    if cd "$service_dir" 2>/dev/null; then
-        docker compose down -v 2>/dev/null || true
+    echo -e "${UI_MUTED}Stopping and removing Vero with full cleanup...${NC}"
+    
+    # Source our new lifecycle system
+    [[ -f "${NODEBOI_LIB}/service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/service-lifecycle.sh"
+    
+    # Use new lifecycle system if available, fallback to old method
+    if declare -f remove_service >/dev/null 2>&1; then
+        # New lifecycle system with cleanup hooks
+        if remove_service "vero"; then
+            # Still need to remove directory and containers (lifecycle handles monitoring cleanup)
+            manage_service "down" "vero" 2>/dev/null || true
+            rm -rf "$service_dir"
+            echo -e "${GREEN}✓ Vero removed successfully with full cleanup${NC}"
+        else
+            echo -e "${RED}✗ Removal failed - some cleanup may be incomplete${NC}"
+        fi
+    else
+        # Fallback to old method if lifecycle system not available
+        echo -e "${YELLOW}⚠ Using fallback removal (cleanup hooks not available)${NC}"
+        if [[ -d "$service_dir" ]]; then
+            manage_service "down" "vero"
+        fi
+        rm -rf "$service_dir"
+        
+        # Clean up orphaned validator network if no validator services remain
+        cleanup_validator_network
+        
+        # Old cleanup methods (less reliable)
+        if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+            echo -e "${UI_MUTED}Updating service connections...${NC}"
+            source "${NODEBOI_LIB}/monitoring.sh" 
+            manage_service_networks "sync" "silent"
+        fi
+        
+        if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
+            source "${NODEBOI_LIB}/grafana-dashboard-management.sh" && refresh_monitoring_dashboards
+        fi
+        
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+        
+        echo -e "${GREEN}✓ Vero removed (basic cleanup)${NC}"
     fi
     
-    echo -e "${UI_MUTED}Removing Vero directory...${NC}"
-    rm -rf "$service_dir"
+    press_enter
+}
+
+# Remove Teku validator installation  
+remove_teku_validator() {
+    local service_dir="$HOME/teku-validator"
     
-    echo -e "${GREEN}✓ Vero has been completely removed${NC}"
+    echo -e "${CYAN}${BOLD}Remove Teku Validator${NC}"
+    echo "==================="
+    echo
+    echo -e "${YELLOW}⚠️  WARNING: This will completely remove Teku validator and all its data${NC}"
+    echo -e "${UI_MUTED}• All validator configuration will be lost${NC}"
+    echo -e "${UI_MUTED}• Container and volumes will be deleted${NC}"
+    echo -e "${UI_MUTED}• This action cannot be undone${NC}"
+    echo
     
-    # Update service connections after Vero removal (DICKS)
-    if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Updating service connections...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto
+    if [[ ! -d "$service_dir" ]]; then
+        echo -e "${RED}Teku validator is not installed${NC}"
+        press_enter
+        return 1
     fi
     
-    # Refresh dashboard cache to show updated status
-    [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+    if ! fancy_confirm "Are you sure you want to remove Teku validator?" "n"; then
+        echo -e "${GREEN}Removal cancelled${NC}"
+        press_enter
+        return 0
+    fi
+    
+    if ! fancy_confirm "FINAL CONFIRMATION: This will delete all Teku validator data" "n"; then
+        echo -e "${GREEN}Removal cancelled${NC}"
+        press_enter
+        return 0
+    fi
+    
+    echo -e "${UI_MUTED}Stopping and removing Teku validator with full cleanup...${NC}"
+    
+    # Source our new lifecycle system
+    [[ -f "${NODEBOI_LIB}/service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/service-lifecycle.sh"
+    
+    # Use new lifecycle system if available, fallback to old method
+    if declare -f remove_service >/dev/null 2>&1; then
+        # New lifecycle system with cleanup hooks
+        if remove_service "teku-validator"; then
+            # Still need to remove directory and containers (lifecycle handles monitoring cleanup)
+            manage_service "down" "teku-validator" 2>/dev/null || true
+            rm -rf "$service_dir"
+            echo -e "${GREEN}✓ Teku validator removed successfully with full cleanup${NC}"
+        else
+            echo -e "${RED}✗ Removal failed - some cleanup may be incomplete${NC}"
+        fi
+    else
+        # Fallback to old method if lifecycle system not available
+        echo -e "${YELLOW}⚠ Using fallback removal (cleanup hooks not available)${NC}"
+        if [[ -d "$service_dir" ]]; then
+            manage_service "down" "teku-validator"
+        fi
+        rm -rf "$service_dir"
+        
+        # Clean up orphaned validator network if no validator services remain
+        cleanup_validator_network
+        
+        # Old cleanup methods (less reliable)
+        if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+            echo -e "${UI_MUTED}Updating service connections...${NC}"
+            source "${NODEBOI_LIB}/monitoring.sh" 
+            manage_service_networks "sync" "silent"
+        fi
+        
+        if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
+            source "${NODEBOI_LIB}/grafana-dashboard-management.sh" && refresh_monitoring_dashboards
+        fi
+        
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+        
+        echo -e "${GREEN}✓ Teku validator removed (basic cleanup)${NC}"
+    fi
     
     press_enter
 }
@@ -1526,22 +1659,385 @@ remove_web3signer() {
     echo -e "${YELLOW}Your validator keys are now GONE from this machine${NC}"
     echo -e "${UI_MUTED}If you backed them up, you can restore them by reinstalling Web3signer${NC}"
     
-    # Force refresh dashboard to remove the web3signer service
-    echo -e "${UI_MUTED}Updating dashboard...${NC}"
-    if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
-        echo -e "${GREEN}✓ Dashboard updated${NC}"
+    # Use our new lifecycle system for cleanup
+    echo -e "${UI_MUTED}Running comprehensive cleanup with lifecycle system...${NC}"
+    
+    # Source our new lifecycle system
+    [[ -f "${NODEBOI_LIB}/service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/service-lifecycle.sh"
+    
+    # Use new lifecycle system if available for post-removal cleanup
+    if declare -f cleanup_web3signer >/dev/null 2>&1; then
+        # New lifecycle system cleanup hooks
+        cleanup_web3signer
+        echo -e "${GREEN}✓ Comprehensive cleanup completed${NC}"
+    else
+        # Fallback to old method if lifecycle system not available
+        echo -e "${YELLOW}⚠ Using fallback cleanup (lifecycle hooks not available)${NC}"
+        
+        # Force refresh dashboard to remove the web3signer service
+        echo -e "${UI_MUTED}Updating dashboard...${NC}"
+        if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
+            source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
+            echo -e "${GREEN}✓ Dashboard updated${NC}"
+        fi
+        
+        # Update service connections after Web3signer removal (DICKS)
+        if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
+            echo -e "${UI_MUTED}Updating service connections...${NC}"
+            source "${NODEBOI_LIB}/monitoring.sh" 
+            manage_service_networks "sync" "silent"
+        fi
+        
+        # Refresh dashboard cache to show updated status
+        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
     fi
+    
+    press_enter
+}
+
+# Select beacon node for Teku validator using fancy menu
+select_beacon_node_for_teku() {
+    # Ensure UI functions are available
+    [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
+    
+    local current_url="${1:-}"  # Optional current URL for "Change" mode
+    
+    # Auto-discover available consensus clients for beacon node connection
+    local available_beacon_nodes=()
+    local beacon_node_descriptions=()
+    
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local node_name=$(basename "$dir")
+            
+            # Check if it has a consensus client
+            if (cd "$dir" && docker compose config --services 2>/dev/null | grep -q "consensus"); then
+                # Detect consensus client type - all use standard port 5052 internally
+                local compose_file=$(grep "COMPOSE_FILE=" "$dir/.env" | cut -d'=' -f2)
+                local beacon_client="lodestar"  # default
+                local beacon_port="5052"  # All consensus clients use port 5052 for internal communication
+                local client_display=""
+                
+                if [[ "$compose_file" == *"grandine"* ]]; then
+                    beacon_client="grandine"
+                    client_display="Grandine"
+                elif [[ "$compose_file" == *"lighthouse"* ]]; then
+                    beacon_client="lighthouse"
+                    client_display="Lighthouse"
+                elif [[ "$compose_file" == *"teku"* ]]; then
+                    beacon_client="teku"
+                    client_display="Teku"
+                elif [[ "$compose_file" == *"lodestar"* ]]; then
+                    beacon_client="lodestar"
+                    client_display="Lodestar"
+                fi
+                
+                local beacon_url="http://$node_name-$beacon_client:$beacon_port"
+                available_beacon_nodes+=("$beacon_url")
+                
+                # Mark current selection
+                if [[ "$beacon_url" == "$current_url" ]]; then
+                    beacon_node_descriptions+=("$node_name ($client_display - port $beacon_port) [CURRENT]")
+                else
+                    beacon_node_descriptions+=("$node_name ($client_display - port $beacon_port)")
+                fi
+            fi
+        fi
+    done
+    
+    if [[ ${#available_beacon_nodes[@]} -eq 0 ]]; then
+        echo -e "${RED}No consensus clients found!${NC}"
+        echo -e "${UI_MUTED}Please install at least one ethnode with a consensus client first.${NC}"
+        return 1
+    fi
+    
+    if [[ ${#available_beacon_nodes[@]} -eq 1 ]]; then
+        echo -e "${GREEN}Only one beacon node available: ${beacon_node_descriptions[0]}${NC}"
+        echo "${available_beacon_nodes[0]}"
+        return 0
+    fi
+    
+    # Add custom URL option
+    beacon_node_descriptions+=("Custom beacon node URL...")
+    
+    # Use fancy menu for selection
+    local selection
+    local menu_title="Select Beacon Node"
+    if [[ -n "$current_url" ]]; then
+        menu_title="Change Beacon Node"
+    fi
+    
+    if selection=$(fancy_select_menu "$menu_title" "${beacon_node_descriptions[@]}"); then
+        # Check if custom URL option was selected
+        if [[ $selection -eq $((${#available_beacon_nodes[@]})) ]]; then
+            # Custom URL selected - prompt for input
+            local custom_url
+            custom_url=$(fancy_text_input "Custom Beacon Node" \
+                "Enter custom beacon node URL:" \
+                "${current_url:-http://localhost:5052}" \
+                "")
+            
+            if [[ $? -eq 255 ]]; then
+                return 1  # User cancelled
+            fi
+            
+            # Basic validation
+            if [[ ! "$custom_url" =~ ^https?:// ]]; then
+                echo -e "${RED}Invalid URL format. Must start with http:// or https://${NC}"
+                return 1
+            fi
+            
+            echo "$custom_url"
+            return 0
+        else
+            # Standard beacon node selected
+            echo "${available_beacon_nodes[$selection]}"
+            return 0
+        fi
+    else
+        return 1
+    fi
+}
+
+# Install Teku validator (singleton only) - Full Implementation
+install_teku_validator() {
+    local service_dir="$HOME/teku-validator"
+    
+    # Singleton check
+    if [[ -d "$service_dir" ]]; then
+        echo -e "${YELLOW}Teku validator is already installed${NC}"
+        echo -e "${UI_MUTED}Only one Teku validator instance is supported${NC}"
+        echo -e "${UI_MUTED}Location: ${service_dir}${NC}"
+        press_enter
+        return 0
+    fi
+    
+    # Check Web3signer dependency (must exist)
+    if [[ ! -d "$HOME/web3signer" || ! -f "$HOME/web3signer/.env" ]]; then
+        echo -e "${RED}Web3signer not found!${NC}"
+        echo -e "${UI_MUTED}Please install Web3signer first.${NC}"
+        press_enter
+        return 1
+    fi
+    
+    # Show header only after all checks pass
+    echo -e "${CYAN}${BOLD}Install Teku Validator${NC}"
+    echo "======================"
     echo
     
-    # Update service connections after Web3signer removal (DICKS)
-    if [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Updating service connections...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" 
-        docker_intelligent_connecting_kontainer_system --auto
+    # Select beacon node using fancy menu
+    echo -e "${UI_MUTED}Detecting available beacon nodes...${NC}"
+    local selected_beacon_url
+    selected_beacon_url=$(select_beacon_node_for_teku)
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}Installation cancelled${NC}"
+        press_enter
+        return 1
     fi
     
-    # Refresh dashboard cache to show updated status
+    echo -e "${GREEN}Selected beacon node: ${selected_beacon_url}${NC}"
+    
+    # Extract ethnode name from beacon URL for network configuration
+    # URL format: http://ethnode1-lodestar:5052 -> ethnode1
+    local selected_ethnode
+    selected_ethnode=$(echo "$selected_beacon_url" | sed 's|http://||' | cut -d'-' -f1)
+    echo
+    
+    # Get fee recipient
+    local fee_recipient
+    while true; do
+        fee_recipient=$(fancy_text_input "Teku Validator Setup" \
+            "Fee recipient address (where block rewards go):" \
+            "0x0000000000000000000000000000000000000000" \
+            "")
+        
+        if [[ $? -eq 255 ]]; then
+            echo "Installation cancelled"
+            return 1
+        fi
+        
+        if [[ "$fee_recipient" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+            break
+        else
+            echo -e "${RED}Invalid fee recipient address format${NC}"
+            if ! fancy_confirm "Try again?" "y"; then
+                echo "Installation cancelled"
+                return 1
+            fi
+        fi
+    done
+    
+    # Get graffiti
+    local graffiti
+    graffiti=$(fancy_text_input "Teku Validator Setup" \
+        "Graffiti (optional):" \
+        "teku-validator" \
+        "")
+    
+    # Create directory structure
+    echo -e "${UI_MUTED}Creating directory structure...${NC}"
+    mkdir -p "$service_dir/data"
+    
+    # Get current user UID/GID
+    local current_uid=$(id -u)
+    local current_gid=$(id -g)
+    
+    # Create .env file
+    echo -e "${UI_MUTED}Creating configuration files...${NC}"
+    cat > "$service_dir/.env" <<EOF
+#=============================================================================
+# TEKU VALIDATOR CONFIGURATION
+#=============================================================================
+# Stack identification
+TEKU_NETWORK=teku-validator
+
+# User mapping - current user
+TEKU_UID=${current_uid}
+TEKU_GID=${current_gid}
+
+# Network binding for metrics port
+HOST_BIND_IP=127.0.0.1
+
+# Ethereum network
+ETH2_NETWORK=hoodi
+
+#=============================================================================
+# CONNECTION CONFIGURATION
+#=============================================================================
+# Beacon node connection
+BEACON_NODE_URL=${selected_beacon_url}
+
+# Web3signer connection
+WEB3SIGNER_URL=http://web3signer:9000
+
+#=============================================================================
+# VALIDATOR CONFIGURATION
+#=============================================================================
+# Fee recipient address
+FEE_RECIPIENT=${fee_recipient}
+
+# Graffiti message
+GRAFFITI=${graffiti}
+
+# MEV-Boost configuration (optional)
+MEV_BOOST=http://mevboost:18550
+
+#=============================================================================
+# SERVICE CONFIGURATION
+#=============================================================================
+# Teku version
+TEKU_VERSION=25.9.2
+
+# Metrics port
+TEKU_METRICS_PORT=8008
+
+# Log level
+LOG_LEVEL=INFO
+
+# Java heap size
+TEKU_HEAP=-Xmx4g
+
+#=============================================================================
+# COMPOSE FILE SELECTION
+#=============================================================================
+COMPOSE_FILE=compose.yml
+EOF
+    
+    # Create compose.yml file
+    cat > "$service_dir/compose.yml" <<EOF
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+
+services:
+  teku-validator:
+    image: consensys/teku:\${TEKU_VERSION}
+    container_name: teku-validator
+    restart: unless-stopped
+    user: "\${TEKU_UID}:\${TEKU_GID}"
+    stop_grace_period: 30s
+    environment:
+      - JAVA_OPTS=\${TEKU_HEAP}
+    ports:
+      - "\${HOST_BIND_IP}:\${TEKU_METRICS_PORT}:8008"
+    volumes:
+      - ./data:/var/lib/teku
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - validator-net
+      - web3signer-net
+      - ${selected_ethnode}-net
+    <<: *logging
+    command:
+      - validator-client
+      - --network=\${ETH2_NETWORK}
+      - --data-path=/var/lib/teku
+      - --beacon-node-api-endpoint=\${BEACON_NODE_URL}
+      - --validators-external-signer-url=\${WEB3SIGNER_URL}
+      - --validators-external-signer-public-keys=external-signer
+      - --validators-proposer-default-fee-recipient=\${FEE_RECIPIENT}
+      - --validators-graffiti=\${GRAFFITI}
+      - --logging=\${LOG_LEVEL}
+      - --log-destination=CONSOLE
+      - --metrics-enabled=true
+      - --metrics-port=8008
+      - --metrics-interface=0.0.0.0
+      - --metrics-host-allowlist=*
+      - --doppelganger-detection-enabled=true
+      - --shut-down-when-validator-slashed-enabled=true
+
+networks:
+  validator-net:
+    external: true
+    name: validator-net
+  web3signer-net:
+    external: true
+    name: web3signer-net
+  ${selected_ethnode}-net:
+    external: true
+    name: ${selected_ethnode}-net
+EOF
+    
+    # Set proper permissions
+    chmod 755 "$service_dir"
+    chmod 755 "$service_dir/data"
+    
+    echo -e "${GREEN}✓ Teku validator installed successfully${NC}"
+    echo
+    
+    # Ask user if they want to start the validator now
+    local launch_choice=""
+    launch_choice=$(fancy_text_input "Launch Validator" \
+        "Do you want to launch Teku validator right now? (y/n):" \
+        "" \
+        "")
+    
+    if [[ "$launch_choice" == "y" || "$launch_choice" == "" ]]; then
+        echo -e "${UI_MUTED}Starting Teku validator...${NC}"
+        
+        # Start Teku (safety warning handled by manage_service)
+        if manage_service "up" "teku-validator"; then
+            echo -e "${GREEN}✓ Teku validator started successfully!${NC}"
+        else
+            echo -e "${YELLOW}⚠ Teku installed but failed to start - you can start it manually later${NC}"
+        fi
+    else
+        echo -e "${UI_MUTED}Teku validator ready to launch manually from manage menu${NC}"
+    fi
+    
+    echo
+    echo -e "${UI_MUTED}Configuration:${NC}"
+    echo -e "${UI_MUTED}  • Beacon node: ${selected_beacon_url}${NC}"
+    echo -e "${UI_MUTED}  • Fee recipient: ${fee_recipient}${NC}"
+    echo -e "${UI_MUTED}  • Graffiti: ${graffiti}${NC}"
+    echo -e "${UI_MUTED}  • Location: ${service_dir}${NC}"
+    echo
+    # Refresh dashboards
     [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
     
     press_enter
