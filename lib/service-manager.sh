@@ -8,9 +8,7 @@ export NODEBOI_LIB="${NODEBOI_LIB:-$SCRIPT_DIR}"
 
 # Source all required components
 [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
-[[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
-[[ -f "${NODEBOI_LIB}/service-operations.sh" ]] && source "${NODEBOI_LIB}/service-operations.sh"
-[[ -f "${NODEBOI_LIB}/service-registry.sh" ]] && source "${NODEBOI_LIB}/service-registry.sh"
+[[ -f "${NODEBOI_LIB}/ulcs.sh" ]] && source "${NODEBOI_LIB}/ulcs.sh"
 [[ -f "${NODEBOI_LIB}/lifecycle-hooks.sh" ]] && source "${NODEBOI_LIB}/lifecycle-hooks.sh"
 [[ -f "${NODEBOI_LIB}/service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/service-lifecycle.sh"
 

@@ -5,11 +5,11 @@
 # Source dependencies
 [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
 
-# Service operations logging
-SO_INFO='\033[0;34m'
-SO_SUCCESS='\033[0;32m'
-SO_WARNING='\033[1;33m'
-SO_ERROR='\033[0;31m'
+# Service operations logging - muted grey for clean output
+SO_INFO='\033[38;5;240m'
+SO_SUCCESS='\033[38;5;240m'
+SO_WARNING='\033[38;5;240m'
+SO_ERROR='\033[38;5;240m'
 SO_RESET='\033[0m'
 
 log_so() {
@@ -160,29 +160,13 @@ start_service_containers() {
     
     log_so "Starting services via docker compose"
     
-    # Set required environment variables for ethnode services
-    local env_vars=""
-    if [[ "$service_name" =~ ^ethnode[0-9]+$ ]]; then
-        env_vars="NODE_NAME=$service_name"
-    fi
-    
-    # Start with proper environment
-    if [[ -n "$env_vars" ]]; then
-        if cd "$service_dir" && env $env_vars docker compose up -d >/dev/null 2>&1; then
-            log_so_success "Services started successfully"
-            return 0
-        else
-            log_so_error "Failed to start services"
-            return 1
-        fi
+    # Use standard Docker Compose startup (env vars from .env file)
+    if cd "$service_dir" && docker compose up -d >/dev/null 2>&1; then
+        log_so_success "Services started successfully"
+        return 0
     else
-        if cd "$service_dir" && docker compose up -d >/dev/null 2>&1; then
-            log_so_success "Services started successfully"
-            return 0
-        else
-            log_so_error "Failed to start services"
-            return 1
-        fi
+        log_so_error "Failed to start services"
+        return 1
     fi
 }
 
@@ -218,29 +202,13 @@ recreate_service_containers() {
     
     log_so "Recreating services"
     
-    # Set required environment variables for ethnode services
-    local env_vars=""
-    if [[ "$service_name" =~ ^ethnode[0-9]+$ ]]; then
-        env_vars="NODE_NAME=$service_name"
-    fi
-    
-    # Recreate with proper environment
-    if [[ -n "$env_vars" ]]; then
-        if cd "$service_dir" && env $env_vars docker compose up -d --force-recreate >/dev/null 2>&1; then
-            log_so_success "Services recreated successfully"
-            return 0
-        else
-            log_so_error "Failed to recreate services"
-            return 1
-        fi
+    # Use standard Docker Compose startup (env vars from .env file)
+    if cd "$service_dir" && docker compose up -d --force-recreate >/dev/null 2>&1; then
+        log_so_success "Services recreated successfully"
+        return 0
     else
-        if cd "$service_dir" && docker compose up -d --force-recreate >/dev/null 2>&1; then
-            log_so_success "Services recreated successfully"
-            return 0
-        else
-            log_so_error "Failed to recreate services"
-            return 1
-        fi
+        log_so_error "Failed to recreate services"
+        return 1
     fi
 }
 
@@ -578,50 +546,17 @@ cleanup_monitoring_integration() {
         return 0
     fi
     
-    log_so "Cleaning up monitoring integration for $service_name"
+    log_so "Updating network connections after $service_name removal"
     
-    local cleanup_success=true
-    
-    # 1. Call existing monitoring cleanup hooks
-    if declare -f cleanup_ethnode_monitoring >/dev/null 2>&1; then
-        if ! cleanup_ethnode_monitoring "$service_name"; then
-            log_so_error "Hook-based monitoring cleanup failed"
-            cleanup_success=false
-        fi
-    fi
-    
-    # 2. Rebuild prometheus.yml configuration (remove scrape targets)
-    log_so "Rebuilding prometheus.yml configuration"
-    if rebuild_prometheus_config_after_removal "$service_name" "$service_type"; then
-        log_so_success "Prometheus configuration rebuilt"
+    # Only update network connections - no automatic cleanup
+    if update_monitoring_network_connections; then
+        log_so_success "Network connections updated - users should manually remove any custom targets"
     else
-        log_so_warning "Failed to rebuild prometheus configuration"
-        cleanup_success=false
-    fi
-    
-    # 3. Remove service-specific Grafana dashboards
-    log_so "Removing Grafana dashboards for $service_name"
-    if remove_grafana_dashboards_for_service "$service_name" "$service_type"; then
-        log_so_success "Grafana dashboards removed"
-    else
-        log_so_warning "Failed to remove some Grafana dashboards"
-        cleanup_success=false
-    fi
-    
-    # 4. Restart monitoring stack to apply changes
-    log_so "Restarting monitoring stack to apply configuration changes"
-    if restart_monitoring_stack; then
-        log_so_success "Monitoring stack restarted"
-    else
-        log_so_warning "Failed to restart monitoring stack"
-        cleanup_success=false
-    fi
-    
-    if [[ "$cleanup_success" == "true" ]]; then
-        return 0
-    else
+        log_so_warning "Failed to update network connections"
         return 1
     fi
+    
+    return 0
 }
 
 # Integrate with monitoring
@@ -661,51 +596,17 @@ integrate_with_monitoring() {
         return 0
     fi
     
-    log_so "Integrating $service_name with monitoring"
+    log_so "Updating network connections for monitoring access to $service_name"
     
-    local integration_success=true
-    
-    # 1. Rebuild prometheus.yml to include new service targets
-    log_so "Rebuilding prometheus.yml to include $service_name"
-    if rebuild_prometheus_config_after_addition "$service_name" "$service_type"; then
-        log_so_success "Prometheus configuration updated"
-    else
-        log_so_warning "Failed to update prometheus configuration"
-        integration_success=false
-    fi
-    
-    # 2. Add service-specific Grafana dashboards
-    log_so "Adding Grafana dashboards for $service_name"
-    if add_grafana_dashboards_for_service "$service_name" "$service_type"; then
-        log_so_success "Grafana dashboards added"
-    else
-        log_so_warning "Failed to add some Grafana dashboards"
-        integration_success=false
-    fi
-    
-    # 3. Update network connections (rebuild prometheus compose.yml for multi-network access)
-    log_so "Updating network connections for monitoring integration"
+    # Only update network connections - no automatic targets or dashboards
     if update_monitoring_network_connections; then
-        log_so_success "Network connections updated"
+        log_so_success "Network connections updated - users can manually configure targets"
     else
         log_so_warning "Failed to update network connections"
-        integration_success=false
-    fi
-    
-    # 4. Restart monitoring stack to apply all changes
-    log_so "Restarting monitoring stack to apply integration changes"
-    if restart_monitoring_stack; then
-        log_so_success "Monitoring stack restarted"
-    else
-        log_so_warning "Failed to restart monitoring stack"
-        integration_success=false
-    fi
-    
-    if [[ "$integration_success" == "true" ]]; then
-        return 0
-    else
         return 1
     fi
+    
+    return 0
 }
 
 # =====================================================================
@@ -783,28 +684,6 @@ update_validators_after_removal() {
     return 0
 }
 
-# =====================================================================
-# SERVICE REGISTRY OPERATIONS
-# =====================================================================
-
-# Unregister service from registry
-unregister_service_from_registry() {
-    local service_name="$1"
-    
-    if declare -f unregister_service >/dev/null 2>&1; then
-        log_so "Unregistering $service_name from service registry"
-        if unregister_service "$service_name"; then
-            log_so_success "Service unregistered successfully"
-            return 0
-        else
-            log_so_warning "Service registry update failed (non-critical)"
-            return 1
-        fi
-    else
-        log_so "Service registry functions not available"
-        return 0
-    fi
-}
 
 # =====================================================================
 # DATABASE OPERATIONS (for web3signer)
@@ -850,218 +729,15 @@ migrate_service_database() {
 # MONITORING-SPECIFIC OPERATIONS
 # =====================================================================
 
-# Setup Grafana dashboards
-setup_grafana_dashboards() {
-    local service_name="$1"
-    
-    log_so "Setting up Grafana dashboards for monitoring service"
-    # Dashboard setup logic would go here
-    return 0
-}
+# Removed automatic dashboard setup - users import dashboards manually
 
-# Update service dashboards
-update_service_dashboards() {
-    local service_name="$1"
-    
-    log_so "Updating dashboards for $service_name"
-    # Dashboard update logic would go here
-    return 0
-}
+# Removed automatic dashboard updates - users manage dashboards manually
 
-# Rebuild prometheus.yml configuration after service removal
-rebuild_prometheus_config_after_removal() {
-    local service_name="$1"
-    local service_type="$2"
-    
-    # Source the grafana dashboard management functions
-    if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
-        source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
-    else
-        log_so_error "Grafana dashboard management functions not available"
-        return 1
-    fi
-    
-    # Discover current running networks (excluding the removed service)
-    local running_networks=()
-    for dir in "$HOME"/ethnode*; do
-        if [[ -d "$dir" && "$(basename "$dir")" != "$service_name" ]]; then
-            local ethnode_name=$(basename "$dir")
-            local network_name="${ethnode_name}-net"
-            
-            # Check if the ethnode containers are actually running
-            if cd "$dir" 2>/dev/null && docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -q "Up"; then
-                running_networks+=("$network_name")
-            fi
-        fi
-    done
-    
-    # Add other service networks (only if services are actually running)
-    # Check monitoring
-    if [[ "$service_name" != "monitoring" ]] && [[ -d "$HOME/monitoring" ]]; then
-        if cd "$HOME/monitoring" 2>/dev/null && docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -q "Up"; then
-            running_networks+=("monitoring-net")
-        fi
-    fi
-    
-    # Check validators
-    if [[ "$service_name" != "vero" ]] && [[ -d "$HOME/vero" ]]; then
-        if cd "$HOME/vero" 2>/dev/null && docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -q "Up"; then
-            running_networks+=("validator-net")
-        fi
-    fi
-    if [[ "$service_name" != "teku-validator" ]] && [[ -d "$HOME/teku-validator" ]]; then
-        if cd "$HOME/teku-validator" 2>/dev/null && docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -q "Up"; then
-            running_networks+=("validator-net")
-        fi
-    fi
-    
-    # Check web3signer
-    if [[ "$service_name" != "web3signer" ]] && [[ -d "$HOME/web3signer" ]]; then
-        if cd "$HOME/web3signer" 2>/dev/null && docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -q "Up"; then
-            running_networks+=("web3signer-net")
-        fi
-    fi
-    
-    log_so "Rebuilding prometheus config for networks: ${running_networks[*]}"
-    
-    # Call the existing regenerate_prometheus_config function
-    if declare -f regenerate_prometheus_config >/dev/null 2>&1; then
-        regenerate_prometheus_config "$HOME/monitoring" "${running_networks[@]}"
-        return $?
-    else
-        log_so_error "regenerate_prometheus_config function not available"
-        return 1
-    fi
-}
+# Removed automatic prometheus config rebuilding - users manage targets manually
 
-# Remove Grafana dashboards for a specific service
-remove_grafana_dashboards_for_service() {
-    local service_name="$1"
-    local service_type="$2"
-    
-    # Check if Grafana is running
-    if ! docker ps --format "{{.Names}}" | grep -q "monitoring-grafana"; then
-        log_so "Grafana not running - dashboard removal skipped"
-        return 0
-    fi
-    
-    local grafana_url="http://localhost:3000"
-    local admin_user="admin"
-    local admin_pass="admin"
-    
-    # Get admin password from monitoring .env if available
-    if [[ -f "$HOME/monitoring/.env" ]]; then
-        local env_pass=$(grep "GF_SECURITY_ADMIN_PASSWORD=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null)
-        [[ -n "$env_pass" ]] && admin_pass="$env_pass"
-    fi
-    
-    # Check dependencies
-    if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-        log_so_warning "curl or jq not available - cannot remove dashboards via API"
-        return 0
-    fi
-    
-    local dashboards_removed=0
-    
-    # Define search patterns based on service type
-    local search_patterns=()
-    case "$service_type" in
-        "ethnode")
-            search_patterns+=("$service_name" "$(echo "$service_name" | sed 's/ethnode//')")
-            ;;
-        "validator")
-            search_patterns+=("$service_name" "validator" "vero" "teku.*validator")
-            ;;
-        "web3signer")
-            # Web3signer has no monitoring dashboards
-            log_so "Web3signer has no monitoring dashboards to remove"
-            return 0
-            ;;
-        "monitoring")
-            # Don't remove monitoring dashboards when removing monitoring service
-            log_so "Skipping dashboard removal for monitoring service"
-            return 0
-            ;;
-    esac
-    
-    # Get all dashboards and remove matching ones
-    local dashboards=$(curl -s -u "$admin_user:$admin_pass" "$grafana_url/api/search?type=dash-db" 2>/dev/null)
-    
-    if [[ -n "$dashboards" && "$dashboards" != "[]" ]]; then
-        for pattern in "${search_patterns[@]}"; do
-            local matching_dashboards=$(echo "$dashboards" | jq -r ".[] | select(.title | test(\"$pattern\"; \"i\")) | .uid" 2>/dev/null)
-            
-            while IFS= read -r uid; do
-                if [[ -n "$uid" && "$uid" != "null" ]]; then
-                    log_so "Removing dashboard: $uid (pattern: $pattern)"
-                    if curl -s -X DELETE -u "$admin_user:$admin_pass" "$grafana_url/api/dashboards/uid/$uid" >/dev/null 2>&1; then
-                        ((dashboards_removed++))
-                        log_so "Successfully removed dashboard UID: $uid"
-                    else
-                        log_so_warning "Failed to remove dashboard UID: $uid"
-                    fi
-                fi
-            done <<< "$matching_dashboards"
-        done
-    fi
-    
-    log_so "Removed $dashboards_removed dashboard(s) for $service_name"
-    return 0
-}
+# Removed automatic dashboard removal - users manage dashboards manually
 
-# Restart monitoring stack to apply configuration changes
-restart_monitoring_stack() {
-    local monitoring_dir="$HOME/monitoring"
-    
-    if [[ ! -d "$monitoring_dir" ]]; then
-        log_so_error "Monitoring directory not found"
-        return 1
-    fi
-    
-    if [[ ! -f "$monitoring_dir/compose.yml" ]]; then
-        log_so_error "Monitoring compose.yml not found"
-        return 1
-    fi
-    
-    # Check if monitoring is running
-    local running_containers=$(docker ps --filter "name=monitoring" --format "{{.Names}}" 2>/dev/null)
-    
-    if [[ -z "$running_containers" ]]; then
-        log_so "Monitoring stack not running - no restart needed"
-        return 0
-    fi
-    
-    log_so "Stopping monitoring stack..."
-    if cd "$monitoring_dir" && docker compose down >/dev/null 2>&1; then
-        log_so "Monitoring stack stopped"
-    else
-        log_so_warning "Failed to stop monitoring stack gracefully"
-    fi
-    
-    # Brief pause to ensure clean shutdown
-    sleep 3
-    
-    log_so "Starting monitoring stack with new configuration..."
-    if cd "$monitoring_dir" && docker compose up -d >/dev/null 2>&1; then
-        log_so "Monitoring stack restarted successfully"
-        
-        # Wait a moment for services to start
-        sleep 5
-        
-        # Verify services are running
-        local restarted_containers=$(docker ps --filter "name=monitoring" --format "{{.Names}}" 2>/dev/null)
-        if [[ -n "$restarted_containers" ]]; then
-            log_so "Verified monitoring services are running: $(echo $restarted_containers | tr '\n' ' ')"
-            return 0
-        else
-            log_so_error "Monitoring services failed to start after restart"
-            return 1
-        fi
-    else
-        log_so_error "Failed to restart monitoring stack"
-        return 1
-    fi
-}
+# Removed automatic monitoring restart - users can restart manually if needed
 
 # Update monitoring after service removal
 update_monitoring_after_removal() {
@@ -1133,84 +809,9 @@ export -f remove_service_containers
 # ADDITIONAL MONITORING INTEGRATION FUNCTIONS
 # =====================================================================
 
-# Rebuild prometheus configuration after service addition
-rebuild_prometheus_config_after_addition() {
-    local service_name="$1"
-    local service_type="$2"
-    
-    log_so "Rebuilding prometheus.yml after adding $service_name"
-    
-    # Use existing prometheus rebuild logic
-    if declare -f regenerate_prometheus_config >/dev/null 2>&1; then
-        regenerate_prometheus_config
-        return $?
-    else
-        # Try to source the grafana dashboard management module
-        if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
-            source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
-            if declare -f regenerate_prometheus_config >/dev/null 2>&1; then
-                regenerate_prometheus_config
-                return $?
-            fi
-        fi
-        log_so_warning "regenerate_prometheus_config function not available"
-        return 1
-    fi
-}
+# Removed automatic prometheus config rebuilding after service addition
 
-# Add Grafana dashboards for a service
-add_grafana_dashboards_for_service() {
-    local service_name="$1"
-    local service_type="$2"
-    
-    log_so "Adding Grafana dashboards for $service_type service: $service_name"
-    
-    # Check if monitoring is available
-    if [[ ! -d "$HOME/monitoring" ]]; then
-        log_so "No monitoring directory found"
-        return 1
-    fi
-    
-    # Copy appropriate dashboards based on service type
-    local template_dir="/home/floris/.nodeboi/grafana-dashboards"
-    local target_dir="$HOME/monitoring/grafana/dashboards"
-    
-    case "$service_type" in
-        "ethnode")
-            # Determine which execution/consensus clients are used
-            if [[ -f "$HOME/$service_name/.env" ]]; then
-                local compose_file=$(grep "COMPOSE_FILE=" "$HOME/$service_name/.env" | cut -d'=' -f2)
-                
-                # Add execution client dashboards
-                if echo "$compose_file" | grep -q "reth"; then
-                    cp "$template_dir/execution/reth-overview.json" "$target_dir/" 2>/dev/null
-                fi
-                if echo "$compose_file" | grep -q "besu"; then
-                    cp "$template_dir/execution/besu-overview.json" "$target_dir/" 2>/dev/null
-                fi
-                
-                # Add consensus client dashboards  
-                if echo "$compose_file" | grep -q "teku"; then
-                    cp "$template_dir/consensus/teku-overview.json" "$target_dir/" 2>/dev/null
-                fi
-                if echo "$compose_file" | grep -q "grandine"; then
-                    cp "$template_dir/consensus/grandine-overview.json" "$target_dir/" 2>/dev/null
-                fi
-            fi
-            ;;
-        "validator")
-            # Add validator dashboards
-            cp "$template_dir/validators/vero-detailed.json" "$target_dir/" 2>/dev/null
-            ;;
-        "web3signer")
-            # Web3signer has no monitoring dashboards
-            log_so "Web3signer has no monitoring dashboards to add"
-            return 0
-            ;;
-    esac
-    
-    return 0
-}
+# Removed automatic dashboard copying - users import dashboards manually
 
 # Update monitoring network connections (rebuild compose.yml with all networks)
 update_monitoring_network_connections() {
@@ -1312,7 +913,6 @@ export -f connect_validator_to_ethnodes
 export -f discover_and_configure_beacon_endpoints
 export -f cleanup_validator_integration
 export -f update_validators_after_removal
-export -f unregister_service_from_registry
 export -f setup_service_database
 export -f ensure_service_database
 export -f migrate_service_database
@@ -1333,41 +933,91 @@ export -f integrate_with_web3signer
 # CLIENT-SPECIFIC SHUTDOWN PROCEDURES
 # =====================================================================
 
+# JSON-RPC admin_shutdown for Nethermind
+shutdown_nethermind_via_jsonrpc() {
+    local service_name="$1"
+    local rpc_port="${2:-8545}"
+    
+    log_so "Attempting Nethermind shutdown via JSON-RPC admin_shutdown"
+    
+    # Try JSON-RPC admin_shutdown method
+    local rpc_response
+    if rpc_response=$(curl -s -X POST -H "Content-Type: application/json" \
+        --data '{"jsonrpc":"2.0","method":"admin_shutdown","params":[],"id":1}' \
+        --max-time 5 \
+        "http://127.0.0.1:${rpc_port}" 2>/dev/null); then
+        
+        if [[ "$rpc_response" == *'"result"'* ]]; then
+            log_so "✓ Nethermind acknowledged shutdown command via JSON-RPC"
+            return 0
+        else
+            log_so "JSON-RPC response: $rpc_response"
+            return 1
+        fi
+    else
+        log_so "Failed to connect to Nethermind JSON-RPC on port $rpc_port"
+        return 1
+    fi
+}
+
 # Nethermind graceful shutdown with database flush
 stop_nethermind_gracefully() {
     local service_name="$1"
     local service_dir="$2" 
     local env_vars="$3"
     
-    log_so "Initiating Nethermind graceful shutdown procedure"
+    log_so "Initiating improved Nethermind graceful shutdown procedure"
     
-    # Step 1: Send SIGTERM to Nethermind container to trigger graceful shutdown
     local container_name="${service_name}-nethermind"
     if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
-        log_so "Sending SIGTERM to Nethermind for graceful shutdown..."
-        docker kill -s TERM "$container_name" 2>/dev/null || true
         
-        # Step 2: Wait with progress indicator for database flush (up to 60 seconds)
-        local wait_time=0
-        local max_wait=60
-        while [[ $wait_time -lt $max_wait ]] && docker ps --format "{{.Names}}" | grep -q "^$container_name$"; do
-            if [[ $((wait_time % 10)) -eq 0 ]]; then
-                log_so "Waiting for Nethermind database flush... ($wait_time/${max_wait}s)"
-            fi
-            sleep 2
-            ((wait_time += 2))
-        done
+        # Method 1: JSON-RPC admin_shutdown (preferred)
+        local rpc_port=$(grep "^.*8545.*->8545" <<< "$(docker port "$container_name")" | cut -d: -f2 2>/dev/null || echo "8545")
+        if shutdown_nethermind_via_jsonrpc "$service_name" "$rpc_port"; then
+            log_so "Waiting for Nethermind to shutdown via JSON-RPC..."
+            local wait_time=0
+            local max_wait=120
+            while [[ $wait_time -lt $max_wait ]] && docker ps --format "{{.Names}}" | grep -q "^$container_name$"; do
+                if [[ $((wait_time % 15)) -eq 0 ]]; then
+                    log_so "Waiting for Nethermind database flush via JSON-RPC... ($wait_time/${max_wait}s)"
+                fi
+                sleep 3
+                ((wait_time += 3))
+            done
+        fi
         
-        # Step 3: If still running after graceful period, force compose down
+        # Method 2: Extended docker stop (if still running)
         if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
-            log_so_warning "Nethermind did not stop gracefully, forcing shutdown"
+            log_so "JSON-RPC shutdown incomplete, trying extended docker stop..."
+            docker stop --time=180 "$container_name" >/dev/null 2>&1 || true
+        fi
+        
+        # Method 3: SIGTERM with extended wait (fallback)
+        if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+            log_so "Extended stop failed, using SIGTERM with extended timeout..."
+            docker kill -s TERM "$container_name" 2>/dev/null || true
+            
+            local wait_time=0
+            local max_wait=120
+            while [[ $wait_time -lt $max_wait ]] && docker ps --format "{{.Names}}" | grep -q "^$container_name$"; do
+                if [[ $((wait_time % 15)) -eq 0 ]]; then
+                    log_so "Waiting for Nethermind database flush via SIGTERM... ($wait_time/${max_wait}s)"
+                fi
+                sleep 3
+                ((wait_time += 3))
+            done
+        fi
+        
+        # Method 4: Force compose down (final fallback)
+        if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+            log_so_warning "All graceful methods failed, forcing shutdown"
             local compose_cmd="docker compose down -t 10"
             if [[ -n "$env_vars" ]]; then
                 compose_cmd="env $env_vars $compose_cmd"
             fi
             cd "$service_dir" && eval "$compose_cmd" >/dev/null 2>&1
         else
-            log_so_success "Nethermind stopped gracefully after database flush"
+            log_so_success "Nethermind stopped gracefully"
             # Clean up remaining containers via compose
             local compose_cmd="docker compose down -t 5"
             if [[ -n "$env_vars" ]]; then
@@ -1605,6 +1255,98 @@ restart_monitoring_stack() {
     return 1
 }
 
+# =====================================================================
+# ULCS LIFECYCLE STEP IMPLEMENTATIONS
+# =====================================================================
+
+# Create directories for a service
+create_service_directories() {
+    local service_name="$1"
+    local params="$2"
+    
+    log_so "Creating directory structure for $service_name"
+    
+    local service_dir="$HOME/$service_name"
+    if mkdir -p "$service_dir"; then
+        log_so_success "Directory $service_dir created"
+        return 0
+    else
+        log_so_error "Failed to create directory $service_dir"
+        return 1
+    fi
+}
+
+# Copy configuration files for a service  
+copy_service_configs() {
+    local service_name="$1"
+    local service_type="$2" 
+    local params="$3"
+    
+    log_so "Generating configuration files for $service_type service"
+    
+    case "$service_type" in
+        "ethnode")
+            # For ethnode, use a simplified config generation that doesn't require user interaction
+            log_so "ULCS ethnode config generation not yet implemented"
+            log_so "Please use the traditional ethnode installation method from the main menu"
+            return 1
+            ;;
+        *)
+            log_so_error "Unknown service type: $service_type"
+            return 1
+            ;;
+    esac
+}
+
+# Setup networking for a service
+setup_service_networking() {
+    local service_name="$1" 
+    local flow_def="$2"
+    
+    log_so "Creating network: ${service_name}-net"
+    
+    # Create service-specific network
+    if docker network create "${service_name}-net" >/dev/null 2>&1; then
+        log_so_success "Network ${service_name}-net created"
+        return 0
+    else
+        # Network might already exist
+        if docker network ls --format "{{.Name}}" | grep -q "^${service_name}-net$"; then
+            log_so "Network ${service_name}-net already exists"
+            return 0
+        else
+            log_so_error "Failed to create network ${service_name}-net"
+            return 1
+        fi
+    fi
+}
+
+# Start service containers
+start_service_containers() {
+    local service_name="$1"
+    local service_dir="$HOME/$service_name"
+    
+    if [[ ! -d "$service_dir" || ! -f "$service_dir/compose.yml" ]]; then
+        log_so_error "No compose.yml found in $service_dir"
+        return 1
+    fi
+    
+    log_so "Starting services"
+    
+    # Use standard Docker Compose startup (env vars from .env file)
+    if cd "$service_dir" && docker compose up -d >/dev/null 2>&1; then
+        log_so_success "Services started successfully"
+        return 0
+    else
+        log_so_error "Failed to start services"
+        return 1
+    fi
+}
+
+export -f create_service_directories
+export -f copy_service_configs  
+export -f setup_service_networking
+export -f start_service_containers
 export -f cleanup_service_integrations
 export -f cleanup_monitoring_integration
 export -f regenerate_prometheus_config_safe

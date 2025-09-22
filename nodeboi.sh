@@ -3,7 +3,7 @@
 set -eo pipefail
 trap 'echo "Error on line $LINENO" >&2' ERR
 
-SCRIPT_VERSION="v0.4.1"
+SCRIPT_VERSION="v0.5.0"
 NODEBOI_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODEBOI_LIB="${NODEBOI_HOME}/lib"
 
@@ -51,16 +51,16 @@ print_header() {
     
     echo -e "${header_color}${bold}"
     cat << "HEADER"
-      ███╗   ██╗ ██████╗ ██████╗ ███████╗██████╗  ██████╗ ██╗
-      ████╗  ██║██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║
-      ██╔██╗ ██║██║   ██║██║  ██║█████╗  ██████╔╝██║   ██║██║
-      ██║╚██╗██║██║   ██║██║  ██║██╔══╝  ██╔══██╗██║   ██║██║
-      ██║ ╚████║╚██████╔╝██████╔╝███████╗██████╔╝╚██████╔╝██║
-      ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
+        ███╗   ██╗ ██████╗ ██████╗ ███████╗██████╗  ██████╗ ██╗
+        ████╗  ██║██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║
+        ██╔██╗ ██║██║   ██║██║  ██║█████╗  ██████╔╝██║   ██║██║
+        ██║╚██╗██║██║   ██║██║  ██║██╔══╝  ██╔══██╗██║   ██║██║
+        ██║ ╚████║╚██████╔╝██████╔╝███████╗██████╔╝╚██████╔╝██║
+        ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
 HEADER
     echo -e "${reset}"
-    echo -e "                      ${cyan}ETHEREUM NODE AUTOMATION${reset}"
-    echo -e "                             ${yellow}${SCRIPT_VERSION}${reset}"
+    echo -e "                        ${cyan}ETHEREUM NODE AUTOMATION${reset}"
+    echo -e "                                 ${yellow}${SCRIPT_VERSION}${reset}"
 
     echo
 }
@@ -84,7 +84,7 @@ install_service_menu() {
         install_options+=("Install validator")
         
         # Add monitoring option if not installed
-        if [[ ! -d "$HOME/monitoring" || ! -f "$HOME/monitoring/docker-compose.yml" ]]; then
+        if [[ ! -d "$HOME/monitoring" || ! -f "$HOME/monitoring/compose.yml" ]]; then
             install_options+=("Install monitoring")
         fi
         
@@ -96,7 +96,7 @@ install_service_menu() {
             
             case "$selected_option" in
                 "Install new ethnode")
-                    install_ethnode_universal
+                    install_node
                     ;;
                 "Install Web3signer")
                     [[ -f "${NODEBOI_LIB}/validator-manager.sh" ]] && source "${NODEBOI_LIB}/validator-manager.sh"
@@ -112,12 +112,18 @@ install_service_menu() {
                     ;;
                 "Install monitoring")
                     [[ -f "${NODEBOI_LIB}/monitoring.sh" ]] && source "${NODEBOI_LIB}/monitoring.sh"
-                    install_monitoring_services_with_dicks
+                    install_monitoring_services_with_networks
                     ;;
                 "Back to main menu")
                     return
                     ;;
             esac
+            
+            # Check if ULCS operation requested return to main menu
+            if [[ "$RETURN_TO_MAIN_MENU" == "true" ]]; then
+                RETURN_TO_MAIN_MENU=false  # Reset flag
+                return  # Exit to main menu
+            fi
         else
             return
         fi
@@ -232,7 +238,6 @@ manage_web3signer_menu() {
                         echo -e "${RED}✗ Failed to start Web3signer${NC}"
                     fi
                     refresh_dashboard_background
-                    refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Web3signer")
@@ -257,21 +262,19 @@ manage_web3signer_menu() {
                     interactive_key_import
                     ;;
                 "Remove keys")
-                    echo -e "${CYAN}Remove Validator Keys${NC}"
-                    echo "====================="
+                    echo -e "${RED}${BOLD}⚠️  MAINNET SECURITY WARNING${NC}"
+                    echo "==============================="
                     echo
-                    echo "This will list and allow you to remove validator keys from Web3signer."
-                    echo -e "${YELLOW}⚠️  WARNING: Removed keys cannot be used for validation${NC}"
+                    echo -e "${RED}Software deletion cannot guarantee complete key removal.${NC}"
+                    echo -e "${RED}Private keys may remain in filesystem slack space, swap files,${NC}"
+                    echo -e "${RED}or SSD wear-leveling sectors.${NC}"
                     echo
-                    if fancy_confirm "Continue with key removal?" "n"; then
-                        # Call the remove keys script
-                        if [[ -f ~/web3signer/remove-keys.sh ]]; then
-                            cd ~/web3signer && ./remove-keys.sh
-                        else
-                            echo -e "${RED}Remove keys script not found${NC}"
-                            echo "This feature may not be fully implemented yet."
-                        fi
-                    fi
+                    echo -e "${YELLOW}${BOLD}If you stored mainnet keys worth significant ETH:${NC}"
+                    echo -e "${RED}• Recommended: Physically destroy the SSD${NC}"
+                    echo
+                    echo -e "${RED}${BOLD}NODEBOI DOES NOT PROVIDE AUTOMATED KEY REMOVAL${NC}"
+                    echo -e "${UI_MUTED}Keys located at: ~/web3signer/web3signer_config/keystores/${NC}"
+                    echo
                     press_enter
                     ;;
                 "Update Web3signer")
@@ -288,6 +291,12 @@ manage_web3signer_menu() {
                     return
                     ;;
             esac
+            
+            # Check if ULCS operation requested return to main menu
+            if [[ "$RETURN_TO_MAIN_MENU" == "true" ]]; then
+                RETURN_TO_MAIN_MENU=false  # Reset flag
+                return  # Exit to main menu
+            fi
         else
             return
         fi
@@ -350,6 +359,12 @@ manage_validator_submenu() {
                     return
                     ;;
             esac
+            
+            # Check if ULCS operation requested return to main menu
+            if [[ "$RETURN_TO_MAIN_MENU" == "true" ]]; then
+                RETURN_TO_MAIN_MENU=false  # Reset flag
+                return  # Exit to main menu
+            fi
         else
             return
         fi
@@ -389,7 +404,6 @@ manage_vero_menu() {
                         echo -e "${RED}✗ Failed to start Vero${NC}"
                     fi
                     refresh_dashboard_background
-                    refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Vero")
@@ -419,7 +433,6 @@ manage_vero_menu() {
                             echo -e "${RED}✗ Failed to start Vero${NC}"
                         fi
                         refresh_dashboard_background
-                        refresh_monitoring_dashboards
                     fi
                     press_enter
                     ;;
@@ -428,8 +441,7 @@ manage_vero_menu() {
                     cd ~/vero && docker compose logs -f vero
                     ;;
                 "Manage beacon endpoints")
-                    echo -e "${UI_MUTED}Edit ~/vero/.env manually and restart Vero${NC}"
-                    press_enter
+                    manage_vero_beacon_endpoints
                     ;;
                 "Update fee recipient")
                     update_vero_fee_recipient
@@ -444,6 +456,7 @@ manage_vero_menu() {
                     ;;
             esac
         else
+            # User cancelled menu, return to parent
             return
         fi
     done
@@ -487,7 +500,6 @@ manage_teku_validator_menu() {
                         echo -e "${RED}✗ Failed to start Teku validator${NC}"
                     fi
                     refresh_dashboard_background
-                    refresh_monitoring_dashboards
                     press_enter
                     ;;
                 "Stop Teku validator")
@@ -564,7 +576,6 @@ update_teku_validator_fee_recipient() {
             echo -e "${RED}✗ Failed to restart Teku validator${NC}"
         fi
         refresh_dashboard_background
-        refresh_monitoring_dashboards
     fi
     
     press_enter
@@ -601,8 +612,16 @@ change_teku_validator_beacon_node() {
         return
     fi
     
-    # Update .env file
-    sed -i "s|BEACON_NODE_URL=.*|BEACON_NODE_URL=$selected_beacon_url|g" ~/teku-validator/.env
+    # Update .env file using a more robust approach
+    if [[ -f ~/teku-validator/.env ]]; then
+        # Create a temporary file with the updated content
+        grep -v "^BEACON_NODE_URL=" ~/teku-validator/.env > ~/teku-validator/.env.tmp
+        echo "BEACON_NODE_URL=$selected_beacon_url" >> ~/teku-validator/.env.tmp
+        mv ~/teku-validator/.env.tmp ~/teku-validator/.env
+    else
+        echo -e "${RED}Error: teku-validator .env file not found${NC}"
+        return 1
+    fi
     
     echo -e "${GREEN}✓ Beacon node updated${NC}"
     echo -e "${UI_MUTED}New beacon node: ${selected_beacon_url}${NC}"
@@ -616,7 +635,6 @@ change_teku_validator_beacon_node() {
             echo -e "${RED}✗ Failed to restart Teku validator${NC}"
         fi
         refresh_dashboard_background
-        refresh_monitoring_dashboards
     fi
     
     press_enter
@@ -683,8 +701,7 @@ update_vero_fee_recipient() {
         else
             echo -e "${RED}✗ Failed to restart Vero${NC}"
         fi
-        refresh_dashboard
-        refresh_monitoring_dashboards
+        refresh_dashboard_background
     fi
     
     press_enter
@@ -790,10 +807,8 @@ main_menu() {
         local selection
         if selection=$(fancy_select_menu "Main Menu" "${menu_options[@]}"); then
             case $selection in
-                0) install_service_menu 
-                   refresh_dashboard ;;
-                1) manage_service_menu 
-                   refresh_dashboard ;;
+                0) install_service_menu ;;
+                1) manage_service_menu ;;
                 2) system_menu ;;
                 3) exit 0 ;;
             esac
@@ -831,6 +846,12 @@ manage_nodes_menu() {
                 4) remove_nodes_menu ;;
                 5) return ;;  # Back to main menu
             esac
+            
+            # Check if ULCS operation requested return to main menu
+            if [[ "$RETURN_TO_MAIN_MENU" == "true" ]]; then
+                RETURN_TO_MAIN_MENU=false  # Reset flag
+                return  # Exit to main menu
+            fi
         else
             return  # User pressed 'q' - back to main menu
         fi
@@ -921,6 +942,161 @@ remove_nodeboi() {
     echo
     
     exit 0
+}
+
+# Manage Vero beacon endpoints
+manage_vero_beacon_endpoints() {
+    if [[ ! -d "$HOME/vero" || ! -f "$HOME/vero/.env" ]]; then
+        clear
+        print_header
+        echo -e "${RED}✗ Vero not installed${NC}"
+        echo
+        press_enter
+        return
+    fi
+    
+    clear
+    print_header
+    
+    # Show current configuration
+    echo -e "${CYAN}${BOLD}Manage Beacon Endpoints${NC}"
+    echo "========================"
+    echo
+    
+    local current_beacons=$(grep "^BEACON_NODE_URLS=" "$HOME/vero/.env" | cut -d'=' -f2)
+    echo -e "${BOLD}Current beacon nodes:${NC}"
+    echo "  $current_beacons"
+    echo
+    
+    # Discover available ethnodes with their consensus clients
+    local available_ethnodes=()
+    local ethnode_clients=()
+    for dir in "$HOME"/ethnode*; do
+        if [[ -d "$dir" && -f "$dir/.env" ]]; then
+            local ethnode_name=$(basename "$dir")
+            # Check if ethnode is running
+            if docker ps --format "{{.Names}}" | grep -q "^${ethnode_name}-"; then
+                # Detect consensus client from compose file
+                local compose_file=$(grep "COMPOSE_FILE=" "$dir/.env" 2>/dev/null | cut -d'=' -f2)
+                local consensus_client=""
+                
+                if [[ "$compose_file" == *"teku"* ]]; then
+                    consensus_client="teku"
+                elif [[ "$compose_file" == *"grandine"* ]]; then
+                    consensus_client="grandine"
+                elif [[ "$compose_file" == *"lodestar"* ]]; then
+                    consensus_client="lodestar"
+                elif [[ "$compose_file" == *"lighthouse"* ]]; then
+                    consensus_client="lighthouse"
+                else
+                    consensus_client="teku"  # fallback
+                fi
+                
+                available_ethnodes+=("$ethnode_name")
+                ethnode_clients+=("$consensus_client")
+            fi
+        fi
+    done
+    
+    if [[ ${#available_ethnodes[@]} -eq 0 ]]; then
+        echo -e "${RED}✗ No running ethnodes found${NC}"
+        echo
+        press_enter
+        return
+    fi
+    
+    echo -e "${BOLD}Available beacon nodes:${NC}"
+    for i in "${!available_ethnodes[@]}"; do
+        local ethnode="${available_ethnodes[$i]}"
+        local client="${ethnode_clients[$i]}"
+        echo "  $ethnode-$client (http://${ethnode}-${client}:5052)"
+    done
+    echo
+    
+    # Create menu options
+    local menu_options=()
+    for i in "${!available_ethnodes[@]}"; do
+        local ethnode="${available_ethnodes[$i]}"
+        local client="${ethnode_clients[$i]}"
+        menu_options+=("Connect to $ethnode-$client only")
+    done
+    menu_options+=("Connect to all beacon nodes")
+    menu_options+=("Back to Vero menu")
+    
+    local selection
+    if selection=$(fancy_select_menu "Beacon Node Selection" "${menu_options[@]}"); then
+        local selected_option="${menu_options[$selection]}"
+        
+        case "$selected_option" in
+            "Connect to all beacon nodes")
+                # Build URL list for all ethnodes with their actual clients
+                local beacon_urls=""
+                for i in "${!available_ethnodes[@]}"; do
+                    local ethnode="${available_ethnodes[$i]}"
+                    local client="${ethnode_clients[$i]}"
+                    if [[ -z "$beacon_urls" ]]; then
+                        beacon_urls="http://${ethnode}-${client}:5052"
+                    else
+                        beacon_urls="${beacon_urls},http://${ethnode}-${client}:5052"
+                    fi
+                done
+                
+                echo -e "${GREEN}Configuring Vero to use all beacon nodes...${NC}"
+                ;;
+            "Back to Vero menu")
+                return
+                ;;
+            *)
+                # Single ethnode selection - extract ethnode-client from menu option
+                local ethnode_client=$(echo "$selected_option" | sed 's/Connect to \(.*\) only/\1/')
+                local beacon_urls="http://${ethnode_client}:5052"
+                
+                echo -e "${GREEN}Configuring Vero to use $ethnode_client...${NC}"
+                ;;
+        esac
+        
+        # Update the .env file
+        if [[ -n "$beacon_urls" ]]; then
+            # Create backup
+            cp "$HOME/vero/.env" "$HOME/vero/.env.backup.$(date +%s)"
+            
+            # Update BEACON_NODE_URLS
+            sed -i "s|^BEACON_NODE_URLS=.*|BEACON_NODE_URLS=$beacon_urls|" "$HOME/vero/.env"
+            
+            # Update VERO_COMMAND to match
+            local updated_command=$(grep "^VERO_COMMAND=" "$HOME/vero/.env" | sed "s|--beacon-node-urls=[^[:space:]]*|--beacon-node-urls=$beacon_urls|")
+            sed -i "s|^VERO_COMMAND=.*|$updated_command|" "$HOME/vero/.env"
+            
+            echo -e "${GREEN}✓ Configuration updated${NC}"
+            echo
+            
+            # Restart Vero with full down/up to reload command parameters
+            echo -e "${UI_MUTED}Restarting Vero to apply changes...${NC}"
+            if cd "$HOME/vero" && docker compose down >/dev/null 2>&1 && docker compose up -d >/dev/null 2>&1; then
+                echo -e "${GREEN}✓ Vero restarted successfully${NC}"
+            else
+                echo -e "${RED}✗ Failed to restart Vero${NC}"
+            fi
+            
+            # Update network connections - add Vero to the selected ethnode networks
+            echo -e "${UI_MUTED}Updating network connections...${NC}"
+            
+            # Source network manager
+            if [[ -f "${NODEBOI_LIB}/network-manager.sh" ]]; then
+                source "${NODEBOI_LIB}/network-manager.sh"
+                
+                # Update all network connections to ensure Vero can reach the selected beacon nodes
+                if declare -f manage_service_networks >/dev/null 2>&1; then
+                    manage_service_networks "sync" "silent" || true
+                fi
+            fi
+            
+            echo -e "${GREEN}✓ Network connections updated${NC}"
+        fi
+        
+        echo
+        press_enter
+    fi
 }
 
 # Handle command line arguments

@@ -5,6 +5,7 @@
 # Import required modules
 [[ -f "${NODEBOI_LIB}/common.sh" ]] && source "${NODEBOI_LIB}/common.sh"
 [[ -f "${NODEBOI_LIB}/network-manager.sh" ]] && source "${NODEBOI_LIB}/network-manager.sh"
+[[ -f "${NODEBOI_LIB}/templates.sh" ]] && source "${NODEBOI_LIB}/templates.sh"
 
 #============================================================================
 # MONITORING INSTALLATION
@@ -63,14 +64,6 @@ install_monitoring_stack() {
     # Set error trap
     trap atomic_monitoring_cleanup ERR INT TERM
     
-    echo -e "\n${CYAN}${BOLD}Install Monitoring${NC}"
-    echo "========================="
-    echo
-    echo -e "${UI_MUTED}This will install:${NC}"
-    echo -e "${UI_MUTED}  • Prometheus - Metrics collection and storage${NC}"
-    echo -e "${UI_MUTED}  • Grafana - Visual dashboards and analytics${NC}"
-    echo -e "${UI_MUTED}  • Node Exporter - System metrics (CPU/Memory/Disk)${NC}"
-    echo
     
     # Check if already installed
     if [[ -d "$final_dir" ]]; then
@@ -94,24 +87,33 @@ install_monitoring_stack() {
     fi
     
     # Create staging environment
-    echo -e "${UI_MUTED}Creating staging environment...${NC}"
+    # Creating staging environment...
     mkdir -p "$staging_dir/grafana/provisioning/datasources"
     
     # Setup user info
-    echo -e "${UI_MUTED}Setting up user configuration...${NC}"
+    # Setting up user configuration...
     
     # Use current user (eth-docker pattern - no system user needed)
     local NODE_UID=$(id -u)
     local NODE_GID=$(id -g)
-    echo -e "${UI_MUTED}  Using current user: UID=${NODE_UID}, GID=${NODE_GID}${NC}"
+    # Using current user: UID=${NODE_UID}, GID=${NODE_GID}
     
     # Step 2: Get Grafana password
+    clear
+    print_header
+    
+    # Show dashboard if available
+    if declare -f print_dashboard >/dev/null; then
+        print_dashboard
+        echo
+    fi
+    
+    echo -e "${CYAN}Grafana Setup${NC}"
+    echo "============="
     echo
     local grafana_password
-    grafana_password=$(fancy_text_input "Grafana Setup" \
-        "Set Grafana admin password (or press Enter for random):" \
-        "" \
-        "")
+    echo -ne "${UI_MUTED}Set Grafana admin password (or press Enter for random): ${NC}"
+    read -r grafana_password
     
     if [[ -z "$grafana_password" ]]; then
         # Generate random password
@@ -124,7 +126,7 @@ install_monitoring_stack() {
     if [[ ${#preselected_networks[@]} -gt 0 ]]; then
         # Services installation - use 0.0.0.0 automatically
         bind_ip="0.0.0.0"
-        echo -e "${UI_MUTED}Setting network access to all networks (0.0.0.0)...${NC}"
+        # Setting network access to all networks (0.0.0.0)...
     else
         # Manual installation - prompt for choice
         echo
@@ -145,7 +147,12 @@ install_monitoring_stack() {
                     ;;
                 2) 
                     bind_ip="0.0.0.0"
-                    echo -e "${YELLOW}⚠ WARNING: Accessible from all networks${NC}"
+                    echo -e "${RED}⚠ WARNING: Grafana accessible from ALL networks${NC}"
+                    echo
+                    echo -e "${UI_MUTED}Security note:${NC}"
+                    echo -e "${UI_MUTED}• Grafana will be accessible from your local network (safe for most home setups)${NC}"
+                    echo -e "${UI_MUTED}• Only unsafe if router ports are forwarded to the internet${NC}"
+                    echo -e "${UI_MUTED}• Ensure your network is trusted and firewall is configured${NC}"
                     ;;
             esac
         fi
@@ -157,7 +164,7 @@ install_monitoring_stack() {
     
     if [[ ${#preselected_networks[@]} -gt 0 ]]; then
         # Use pre-selected networks (from services installation)
-        echo -e "${UI_MUTED}Using pre-selected networks: ${preselected_networks[*]}${NC}"
+        # Pre-selected networks: ${preselected_networks[*]}
         selected_networks=("${preselected_networks[@]}")
     else
         # Auto-discover and prompt for selection
@@ -188,7 +195,7 @@ install_monitoring_stack() {
     fi
     
     # Step 5: Find available ports
-    echo -e "${UI_MUTED}Allocating ports...${NC}"
+    # Allocating ports...
     init_port_management >/dev/null 2>&1
     
     local used_ports=$(get_all_used_ports)
@@ -196,234 +203,29 @@ install_monitoring_stack() {
     local grafana_port=$(find_available_port 3000 1 "$used_ports") 
     local node_exporter_port=$(find_available_port 9100 1 "$used_ports")
     
-    # Step 6: Create .env file
-    cat > "$staging_dir/.env" <<EOF
-#============================================================================
-# MONITORING CONFIGURATION
-# Generated: $(date)
-#============================================================================
-COMPOSE_FILE=compose.yml
-MONITORING_NAME=monitoring
-NODE_UID=${NODE_UID}
-NODE_GID=${NODE_GID}
-
-# Monitoring Ports
-PROMETHEUS_PORT=${prometheus_port}
-GRAFANA_PORT=${grafana_port}
-NODE_EXPORTER_PORT=${node_exporter_port}
-
-# Grafana Configuration
-GRAFANA_PASSWORD=${grafana_password}
-
-# Monitoring Versions
-PROMETHEUS_VERSION=v3.5.0
-GRAFANA_VERSION=12.1.0
-NODE_EXPORTER_VERSION=v1.9.1
-
-# Network Access
-BIND_IP=${bind_ip}
-
-# Connected Networks
-MONITORED_NETWORKS="${selected_networks[*]}"
-EOF
-
-    # Step 7: Create compose.yml with dynamic network configuration
-    cat > "$staging_dir/compose.yml" <<'EOF'
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
-    container_name: ${MONITORING_NAME}-prometheus
-    restart: unless-stopped
-    user: "65534:65534"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-    ports:
-      - "${BIND_IP}:${PROMETHEUS_PORT}:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    networks:
-EOF
-
-    # Simple approach: connect to monitoring-net + ethnode networks + validator-net
-    # NEVER connect to web3signer-net for security isolation
-    local monitoring_networks=("monitoring-net" "validator-net")
-    for network in "${selected_networks[@]}"; do
-        if [[ "$network" =~ ^ethnode.*-net$ ]]; then
-            monitoring_networks+=("$network")
-        fi
-    done
+    # Step 6-9: Generate complete monitoring stack using centralized templates
+    echo -e "${UI_MUTED}Generating monitoring configuration files...${NC}"
+    generate_complete_monitoring_stack "$staging_dir" "$NODE_UID" "$NODE_GID" "$prometheus_port" "$grafana_port" "$node_exporter_port" "$grafana_password" "$bind_ip" "${selected_networks[@]}"
     
-    # Remove duplicates and output
-    local unique_networks=($(printf '%s\n' "${monitoring_networks[@]}" | sort -u))
-    for network in "${unique_networks[@]}"; do
-        echo "      - $network" >> "$staging_dir/compose.yml"
-    done
-
-    cat >> "$staging_dir/compose.yml" <<'EOF'
-    depends_on:
-      - node-exporter
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-  grafana:
-    image: grafana/grafana:${GRAFANA_VERSION}
-    container_name: ${MONITORING_NAME}-grafana
-    restart: unless-stopped
-    user: "${NODE_UID}:${NODE_GID}"
-    ports:
-      - "${BIND_IP}:${GRAFANA_PORT}:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:${GRAFANA_PORT}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    networks:
-EOF
-
-    # Add same networks for grafana
-    for network in "${unique_networks[@]}"; do
-        echo "      - $network" >> "$staging_dir/compose.yml"
-    done
-
-    cat >> "$staging_dir/compose.yml" <<'EOF'
-    depends_on:
-      - prometheus
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-  node-exporter:
-    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
-    container_name: ${MONITORING_NAME}-node-exporter
-    restart: unless-stopped
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
-    ports:
-      - "127.0.0.1:${NODE_EXPORTER_PORT}:9100"
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    networks:
-EOF
-
-    # Add same networks for node-exporter
-    for network in "${unique_networks[@]}"; do
-        echo "      - $network" >> "$staging_dir/compose.yml"
-    done
-
-    cat >> "$staging_dir/compose.yml" <<'EOF'
-    security_opt:
-      - no-new-privileges:true
-    <<: *logging
-
-volumes:
-  prometheus_data:
-    name: ${MONITORING_NAME}_prometheus_data
-  grafana_data:
-    name: ${MONITORING_NAME}_grafana_data
-
-networks:
-EOF
-
-    # Add network definitions (only for networks we actually use)
-    for network in "${unique_networks[@]}"; do
-        cat >> "$staging_dir/compose.yml" <<EOF
-  ${network}:
-    external: true
-    name: ${network}
-EOF
-    done
-
-    # Step 8: Create Prometheus configuration
-    echo -e "${UI_MUTED}Generating Prometheus configuration...${NC}"
-    
-    cat > "$staging_dir/prometheus.yml" <<EOF
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-
-EOF
-    
-    # Add discovered targets
-    local prometheus_targets=$(generate_prometheus_targets_authoritative "${selected_networks[@]}")
+    # Add basic prometheus targets
+    local prometheus_targets=$(generate_prometheus_targets_basic)
     echo "$prometheus_targets" >> "$staging_dir/prometheus.yml"
     
-    # Step 9: Create Grafana provisioning configuration
-    # Create datasource configuration
-    cat > "$staging_dir/grafana/provisioning/datasources/prometheus.yml" <<EOF
-apiVersion: 1
-
-datasources:
-  - name: prometheus
-    type: prometheus
-    access: proxy
-    url: http://prometheus:9090
-    isDefault: true
-EOF
-    
-    # Create dashboard provisioning directories
-    mkdir -p "$staging_dir/grafana/provisioning/dashboards"
-    mkdir -p "$staging_dir/grafana/dashboards"
-    
-    # Create dashboard provisioning configuration
-    cat > "$staging_dir/grafana/provisioning/dashboards/dashboards.yml" <<EOF
-apiVersion: 1
-
-providers:
-  - name: 'default'
-    orgId: 1
-    folder: ''
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 10
-    allowUiUpdates: true
-    options:
-      path: /etc/grafana/dashboards
-EOF
-    
-    # Copy relevant dashboard templates based on active services
-    echo -e "${UI_MUTED}Copying dashboard templates for active services...${NC}"
-    copy_relevant_dashboards "$staging_dir/grafana/dashboards" "${selected_networks[@]}"
+    # Note: Dashboard import will be done after Grafana starts via API
+    # Dashboard import will be done automatically after startup...
     
     # Step 10: Set permissions
-    echo -e "${UI_MUTED}Setting permissions...${NC}"
+    # Setting permissions...
     # Ensure proper permissions on directories (already owned by current user)
     chmod 755 "$staging_dir/"
     chmod 755 "$staging_dir/grafana/provisioning/"
     chmod 755 "$staging_dir/grafana/provisioning/datasources/"
     
     # Step 11: Launch monitoring
-    echo -e "${UI_MUTED}Starting monitoring...${NC}"
+    echo -e "${UI_MUTED}Starting monitoring services...${NC}"
     # ATOMIC OPERATION: Move from staging to final location
-    echo -e "${UI_MUTED}Finalizing monitoring installation...${NC}"
-    echo -e "${UI_MUTED}Moving from staging to final location...${NC}"
+    # Finalizing monitoring installation...
+    # Moving from staging to final location...
     
     # This is the atomic operation - either it all succeeds or fails
     mv "$staging_dir" "$final_dir"
@@ -461,29 +263,29 @@ EOF
         # Verify containers are running
         if docker compose ps --services --filter status=running | grep -q prometheus; then
             echo -e "${GREEN}✓ Monitoring installed successfully!${NC}"
+            
             echo
-            echo -e "${BOLD}Access Information:${NC}"
-            echo -e "${UI_MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${CYAN}Grafana Setup${NC}"
+            echo "============="
             
             if [[ "$bind_ip" == "127.0.0.1" ]]; then
-                echo -e "Grafana:     ${GREEN}http://localhost:${grafana_port}/dashboards${NC}"
+                echo -e "${UI_MUTED}Access: ${NC}${GREEN}http://localhost:${grafana_port}/dashboards${NC}"
+            elif [[ "$bind_ip" == "0.0.0.0" ]]; then
+                # Get actual machine IP when binding to all interfaces
+                local machine_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}' || echo "localhost")
+                echo -e "${UI_MUTED}Access: ${NC}${GREEN}http://${machine_ip}:${grafana_port}/dashboards${NC}"
             else
-                echo -e "Grafana:     ${GREEN}http://${bind_ip}:${grafana_port}/dashboards${NC}"
+                echo -e "${UI_MUTED}Access: ${NC}${GREEN}http://${bind_ip}:${grafana_port}/dashboards${NC}"
             fi
-            
+            echo -e "${UI_MUTED}Username: ${NC}${GREEN}admin${NC}"
+            echo -e "${UI_MUTED}Password: ${NC}${GREEN}${grafana_password}${NC}"
             echo
-            echo -e "${BOLD}Login Credentials:${NC}"
-            echo -e "${UI_MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo -e "Username: ${GREEN}admin${NC}"
-            echo -e "Password: ${GREEN}${grafana_password}${NC}"
+            echo -e "${CYAN}Dashboard Setup${NC}"
+            echo "==============="
+            echo -e "${UI_MUTED}Run: nodeboi → Manage monitoring → Grafana Dashboards${NC}"
             echo
-            echo -e "${UI_MUTED}Import dashboards from Grafana web UI:${NC}"
-            echo -e "${UI_MUTED}  • Node Exporter Full: ID 1860${NC}"
-            echo -e "${UI_MUTED}  • Reth: ID 22941${NC}"
-            echo -e "${UI_MUTED}  • Besu: ID 10273${NC}"
-            echo
-            echo -e "${YELLOW}💡 Tip: You can view these credentials later in:${NC}"
-            echo -e "${UI_MUTED}   Main Menu → Manage services → Manage monitoring → See Grafana login information${NC}"
+            echo -e "${UI_MUTED}Press Enter to return to main menu...${NC}"
+            read -r
             
             return 0
         else
@@ -510,8 +312,8 @@ remove_monitoring_stack() {
         return
     fi
     
-    echo -e "\n${CYAN}${BOLD}Remove Monitoring${NC}"
-    echo "======================="
+    echo -e "\n${UI_MUTED}Remove Monitoring${NC}"
+    echo -e "${UI_MUTED}=================${NC}"
     
     echo -e "${UI_MUTED}Stopping monitoring containers...${NC}"
     cd "$HOME/monitoring" 2>/dev/null && docker compose down -v 2>/dev/null || true
@@ -794,7 +596,14 @@ manage_monitoring_state() {
 # AUTOMATED INSTALLATION
 #============================================================================
 
-install_monitoring_services_with_dicks() {
+install_monitoring_services_with_networks() {
+    # Prevent recursive calls
+    if [[ "${INSTALLING_MONITORING}" == "true" ]]; then
+        echo "Installation already in progress, skipping..."
+        return
+    fi
+    export INSTALLING_MONITORING=true
+    
     clear
     print_header
     
@@ -809,24 +618,39 @@ install_monitoring_services_with_dicks() {
         echo -e "${YELLOW}The monitoring stack is already installed${NC}"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
+        unset INSTALLING_MONITORING
         return
     fi
 
-    echo -e "${CYAN}${BOLD}🔌 Installing Monitoring Services${NC}"
-    echo -e "${CYAN}${BOLD}===========================================${NC}"
     echo
-    echo -e "${UI_MUTED}This will install monitoring (Prometheus + Grafana) and"
-    echo -e "automatically connect it to all available ethnode networks.${NC}"
+    echo -e "${CYAN}Installing Monitoring Services${NC}"
+    echo "==============================="
+    echo
+    echo -e "${UI_MUTED}This will install:${NC}"
+    echo
+    echo -e "${UI_MUTED}  • Prometheus${NC}"
+    echo -e "${UI_MUTED}  • Grafana${NC}"
+    echo -e "${UI_MUTED}  • Node Exporter${NC}"
+    echo
+    echo -e "${UI_MUTED}Prometheus will be added to these networks to scrape metrics:${NC}"
     echo
     
     # Get list of available ethnode networks for preview
     # Use proper discovery that checks for actual ethnodes, not just Docker networks
-    local available_networks=($(discover_nodeboi_networks | cut -d':' -f1))
+    local discovered_networks=($(discover_nodeboi_networks | cut -d':' -f1))
+    
+    # Filter networks that will actually be connected (exclude web3signer for security)
+    local available_networks=()
+    for network in "${discovered_networks[@]}"; do
+        if [[ "$network" =~ ^ethnode.*-net$ ]] || [[ "$network" == "monitoring-net" ]] || [[ "$network" == "validator-net" ]]; then
+            available_networks+=("$network")
+        fi
+    done
+    
     if [[ ${#available_networks[@]} -gt 0 ]]; then
-        echo -e "${BOLD}Networks that will be connected:${NC}"
         for network in "${available_networks[@]}"; do
             local node_name="${network%-net}"
-            echo -e "  • $node_name"
+            echo -e "${UI_MUTED}  • $node_name${NC}"
         done
         echo
     else
@@ -834,24 +658,24 @@ install_monitoring_services_with_dicks() {
         echo
     fi
     
-    echo -e "${UI_MUTED}Starting automatic installation...${NC}"
+    echo -e "${UI_MUTED}Press Enter to start installation...${NC}"
+    read -r
     echo
     
     # Install monitoring with all networks pre-selected
     if install_monitoring_stack "${available_networks[@]}"; then
-        echo -e "${GREEN}✅ Monitoring services installed successfully!${NC}"
-        
         # Ensure dashboard cache is refreshed to show new monitoring
         [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
         
-        echo
-        echo -e "${UI_MUTED}Returning to main menu...${NC}"
-        sleep 1
+        # Set flag to return to main menu after ULCS operation
+        RETURN_TO_MAIN_MENU=true
+        unset INSTALLING_MONITORING
         return 0
     else
         echo -e "${RED}❌ Failed to install monitoring services${NC}"
         echo -e "${UI_MUTED}Press Enter to continue...${NC}"
         read -r
+        unset INSTALLING_MONITORING
     fi
 }
 
@@ -903,4 +727,111 @@ get_installed_services() {
     [[ -d "$HOME/web3signer" && -f "$HOME/web3signer/.env" ]] && services+=("web3signer")
     
     printf "%s\n" "${services[@]}" | sort -u
+}
+
+#============================================================================
+# DASHBOARD IMPORT FUNCTIONS
+#============================================================================
+
+# Import relevant dashboards via Grafana API during monitoring installation
+import_monitoring_dashboards_api() {
+    local bind_ip="$1"
+    local grafana_port="$2"
+    local grafana_password="$3"
+    shift 3
+    local selected_networks=("$@")
+    
+    local grafana_url="http://${bind_ip}:${grafana_port}"
+    local auth="admin:${grafana_password}"
+    
+    # Wait for Grafana to be ready
+    local max_attempts=10
+    local attempt=1
+    while [[ $attempt -le $max_attempts ]]; do
+        if curl -s -u "$auth" "$grafana_url/api/health" >/dev/null 2>&1; then
+            break
+        fi
+        echo -e "${UI_MUTED}  Waiting for Grafana to be ready... (attempt $attempt/$max_attempts)${NC}"
+        sleep 2
+        ((attempt++))
+    done
+    
+    if [[ $attempt -gt $max_attempts ]]; then
+        echo -e "${YELLOW}⚠️  Grafana not ready, skipping dashboard import${NC}"
+        return 1
+    fi
+    
+    # Always import Node Exporter dashboard
+    echo -e "${UI_MUTED}  • Importing Node Exporter dashboard...${NC}"
+    import_dashboard_from_grafana_com "$grafana_url" "$auth" "1860"
+    
+    # Import client-specific dashboards based on detected services
+    local imported_clients=()
+    for network in "${selected_networks[@]}"; do
+        local node_name="${network%-net}"
+        local node_dir="$HOME/$node_name"
+        
+        if [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
+            local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2)
+            
+            # Import execution client dashboards
+            if [[ "$compose_file" == *"reth"* ]] && [[ ! " ${imported_clients[*]} " =~ " reth " ]]; then
+                echo -e "${UI_MUTED}  • Importing Reth dashboard...${NC}"
+                import_dashboard_from_grafana_com "$grafana_url" "$auth" "22941"
+                imported_clients+=("reth")
+            elif [[ "$compose_file" == *"besu"* ]] && [[ ! " ${imported_clients[*]} " =~ " besu " ]]; then
+                echo -e "${UI_MUTED}  • Importing Besu dashboard...${NC}"
+                import_dashboard_from_grafana_com "$grafana_url" "$auth" "10273"
+                imported_clients+=("besu")
+            elif [[ "$compose_file" == *"nethermind"* ]] && [[ ! " ${imported_clients[*]} " =~ " nethermind " ]]; then
+                echo -e "${UI_MUTED}  • Importing Nethermind dashboard...${NC}"
+                import_dashboard_from_grafana_com "$grafana_url" "$auth" "13100"
+                imported_clients+=("nethermind")
+            fi
+        fi
+    done
+    
+    if [[ ${#imported_clients[@]} -gt 0 ]]; then
+        echo -e "${GREEN}✓ Dashboards imported: Node Exporter, ${imported_clients[*]}${NC}"
+    else
+        echo -e "${GREEN}✓ Node Exporter dashboard imported${NC}"
+    fi
+}
+
+# Import a dashboard from grafana.com by ID
+import_dashboard_from_grafana_com() {
+    local grafana_url="$1"
+    local auth="$2"
+    local dashboard_id="$3"
+    
+    # Create import payload
+    local import_payload=$(cat <<EOF
+{
+    "dashboard": {
+        "id": null
+    },
+    "inputs": [
+        {
+            "name": "DS_PROMETHEUS",
+            "type": "datasource",
+            "pluginId": "prometheus",
+            "value": "prometheus"
+        }
+    ],
+    "overwrite": true,
+    "pluginId": "${dashboard_id}"
+}
+EOF
+)
+    
+    # Import dashboard
+    if curl -s -u "$auth" \
+        -H "Content-Type: application/json" \
+        -d "$import_payload" \
+        "$grafana_url/api/dashboards/import" >/dev/null 2>&1; then
+        return 0
+    else
+        echo -e "${YELLOW}⚠️  Failed to import dashboard ${dashboard_id}${NC}"
+        return 1
+    fi
 }

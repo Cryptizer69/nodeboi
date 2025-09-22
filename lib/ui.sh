@@ -33,18 +33,25 @@ fancy_select_menu() {
     # Trap to restore cursor
     trap show_cursor EXIT INT TERM
     
+    local last_selected=-1
+    local needs_full_redraw=true
+    local last_dashboard=""
+    local dashboard_read_time=0
+    
     while true; do
-        clear >&2
-        
-        # Show header if available
-        if declare -f print_header >/dev/null; then
-            print_header >&2
-        fi
-        
-        # Show fresh dashboard for all menus - read from cache file each time
+        # Read dashboard content (only when cache file changes)
         local current_dashboard=""
         local refresh_indicator=""
         local lock_file="${DASHBOARD_CACHE_LOCK:-$HOME/.nodeboi/cache/dashboard.lock}"
+        local current_dashboard_time=0
+        
+        # Check cache file modification time
+        if [[ -f "$dashboard_cache_file" ]]; then
+            current_dashboard_time=$(stat -c %Y "$dashboard_cache_file" 2>/dev/null || echo 0)
+        fi
+        
+        # Always read dashboard but only redraw screen when needed
+        dashboard_read_time="$current_dashboard_time"
         
         # Check if background refresh is running - with better race condition handling
         if [[ -f "$lock_file" ]]; then
@@ -79,55 +86,72 @@ fancy_select_menu() {
 "
         fi
         
-        if [[ -n "$current_dashboard" ]]; then
-            # If refreshing, show indicator right after the dashboard title
-            if [[ -n "$refresh_indicator" ]]; then
-                # Split dashboard content to insert refresh indicator after title
-                local dashboard_lines
-                readarray -t dashboard_lines <<< "$current_dashboard"
-                
-                # Show first two lines (title and separator)
-                for i in 0 1; do
-                    [[ ${dashboard_lines[i]+set} ]] && echo -e "${dashboard_lines[i]}" >&2
-                done
-                
-                # Show refresh indicator
-                echo -e "$refresh_indicator" >&2
-                
-                # Show the rest of the dashboard
-                for (( i=2; i<${#dashboard_lines[@]}; i++ )); do
-                    echo -e "${dashboard_lines[i]}" >&2
-                done
-            else
-                echo -e "$current_dashboard" >&2
+        # Only do full screen clear and redraw when selection changes, dashboard changes, or first render
+        if [[ "$needs_full_redraw" == true ]] || [[ "$selected" != "$last_selected" ]] || [[ "$current_dashboard" != "$last_dashboard" ]]; then
+            clear >&2
+            
+            # Show header if available
+            if declare -f print_header >/dev/null; then
+                print_header >&2
             fi
-            echo >&2  # Add blank line after dashboard
+            
+            if [[ -n "$current_dashboard" ]]; then
+                # If refreshing, show indicator right after the dashboard title
+                if [[ -n "$refresh_indicator" ]]; then
+                    # Split dashboard content to insert refresh indicator after title
+                    local dashboard_lines
+                    readarray -t dashboard_lines <<< "$current_dashboard"
+                    
+                    # Show first two lines (title and separator)
+                    for i in 0 1; do
+                        [[ ${dashboard_lines[i]+set} ]] && echo -e "${dashboard_lines[i]}" >&2
+                    done
+                    
+                    # Show refresh indicator
+                    echo -e "$refresh_indicator" >&2
+                    
+                    # Show the rest of the dashboard
+                    for (( i=2; i<${#dashboard_lines[@]}; i++ )); do
+                        echo -e "${dashboard_lines[i]}" >&2
+                    done
+                else
+                    echo -e "$current_dashboard" >&2
+                fi
+                echo >&2  # Add blank line after dashboard
+            fi
+            
+            if [[ -n "$title" ]]; then
+                echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}" >&2
+                printf "${UI_MUTED}%*s${UI_RESET}\n" "${#title}" '' | tr ' ' '=' >&2
+                echo >&2
+            fi
+            
+            # Display options
+            for i in "${!options[@]}"; do
+                local option="${options[$i]}"
+                if [[ $i -eq $selected ]]; then
+                    echo -e "  ${UI_PRIMARY}▶${UI_RESET} ${UI_BOLD}${UI_PRIMARY}$option${UI_RESET}" >&2
+                else
+                    echo -e "    ${UI_MUTED}$option${UI_RESET}" >&2
+                fi
+            done
+            
+            echo -e "\n${UI_DIM}Use ↑/↓ arrows or j/k, Enter to select, 'r' to refresh, 'q' to quit${UI_RESET}" >&2
+            
+            # Update tracking variables
+            last_selected="$selected"
+            needs_full_redraw=false
         fi
         
-        if [[ -n "$title" ]]; then
-            echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}" >&2
-            printf "${UI_MUTED}%*s${UI_RESET}\n" "${#title}" '' | tr ' ' '=' >&2
-            echo >&2
-        fi
-        
-        # Display options
-        for i in "${!options[@]}"; do
-            local option="${options[$i]}"
-            if [[ $i -eq $selected ]]; then
-                echo -e "  ${UI_PRIMARY}▶${UI_RESET} ${UI_BOLD}${UI_PRIMARY}$option${UI_RESET}" >&2
-            else
-                echo -e "    ${UI_MUTED}$option${UI_RESET}" >&2
-            fi
-        done
-        
-        echo -e "\n${UI_DIM}Use ↑/↓ arrows or j/k, Enter to select, 'q' to quit${UI_RESET}" >&2
+        # Always update dashboard tracking (outside conditional)
+        last_dashboard="$current_dashboard"
         
         # Read key with longer timeout to prevent excessive redrawing
         local timeout=10  # Fixed timeout - no special handling for background processes
         
         if ! IFS= read -rsn1 -t "$timeout" key; then
-            # Timeout occurred - only refresh if dashboard content might have changed
-            # This reduces the frequency of unnecessary redraws that cause flickering
+            # Timeout occurred - trigger full redraw to refresh dashboard
+            needs_full_redraw=true
             continue
         fi
         
@@ -166,6 +190,52 @@ fancy_select_menu() {
                 local num=$((key - 1))
                 [[ $num -ge 0 && $num -lt $total ]] && selected=$num
                 ;;
+            'r'|'R')
+                # Show immediate "Refreshing..." indicator - same layout as normal display
+                clear >&2
+                
+                # Show header if available
+                if declare -f print_header >/dev/null; then
+                    print_header >&2
+                fi
+                
+                if [[ -n "$current_dashboard" ]]; then
+                    echo -e "$current_dashboard" >&2
+                    echo >&2  # Add blank line after dashboard
+                fi
+                
+                if [[ -n "$title" ]]; then
+                    echo -e "\n${UI_BOLD}${UI_PRIMARY}$title${UI_RESET}" >&2
+                    printf "${UI_MUTED}%*s${UI_RESET}\n" "${#title}" '' | tr ' ' '=' >&2
+                    echo >&2
+                fi
+                
+                # Display options
+                for i in "${!options[@]}"; do
+                    local option="${options[$i]}"
+                    if [[ $i -eq $selected ]]; then
+                        echo -e "  ${UI_PRIMARY}▶${UI_RESET} ${UI_BOLD}${UI_PRIMARY}$option${UI_RESET}" >&2
+                    else
+                        echo -e "    ${UI_MUTED}$option${UI_RESET}" >&2
+                    fi
+                done
+                
+                # Show refresh indicator instead of normal instructions
+                echo -e "\n${UI_MUTED}◐ Refreshing dashboard...${UI_RESET}" >&2
+                
+                # Force dashboard refresh in background
+                if declare -f refresh_dashboard >/dev/null; then
+                    refresh_dashboard >/dev/null 2>&1 &
+                else
+                    # Fallback to force refresh via manage.sh
+                    if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
+                        source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard >/dev/null 2>&1 &
+                    fi
+                fi
+                
+                # Force dashboard re-read on next loop
+                dashboard_read_time=0
+                ;;
         esac
     done
 }
@@ -201,12 +271,8 @@ fancy_text_input() {
     # Show dashboard for ALL text inputs to maintain consistency
     local dashboard_cache_file="$HOME/.nodeboi/cache/dashboard.cache"
     
-    if declare -f print_dashboard >/dev/null 2>&1; then
-        # If we have access to print_dashboard, use it directly
-        [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" >/dev/null 2>&1
-        [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh" >/dev/null 2>&1
-        cached_dashboard=$(print_dashboard 2>/dev/null)
-    elif [[ -f "$dashboard_cache_file" ]]; then
+    # Always use cache file to avoid expensive operations that cause screen flashing
+    if [[ -f "$dashboard_cache_file" ]]; then
         # Fallback: use the cached dashboard file (for scripts called from nodeboi)
         cached_dashboard=$(cat "$dashboard_cache_file" 2>/dev/null)
     fi

@@ -10,7 +10,7 @@
 [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]] && source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
 
 # Load Universal Lifecycle System
-[[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+[[ -f "${NODEBOI_LIB}/ulcs.sh" ]] && source "${NODEBOI_LIB}/ulcs.sh"
 
 #============================================================================
 # Legacy Function Compatibility Layer - Route to Lifecycle System
@@ -40,183 +40,19 @@ remove_ethnode_from_monitoring() {
     fi
 }
 
-# Missing function that legacy code calls - route to dashboard management
-sync_grafana_dashboards() {
-    # COMPATIBILITY LAYER: Redirect legacy calls to ULCS native monitoring
-    echo "[LEGACY-COMPAT] Redirecting sync_grafana_dashboards to ULCS native system" >&2
-    
-    # Source ULCS monitoring if available
-    if [[ -f "${NODEBOI_LIB}/ulcs-monitoring.sh" ]]; then
-        source "${NODEBOI_LIB}/ulcs-monitoring.sh"
-        
-        # Use ULCS native functions
-        if declare -f ulcs_generate_prometheus_config >/dev/null 2>&1; then
-            ulcs_generate_prometheus_config && ulcs_sync_dashboards
-            return $?
-        fi
-    fi
-    
-    # Fallback to legacy system if ULCS not available
-    echo "[LEGACY-COMPAT] ULCS not available, falling back to legacy system" >&2
-    if declare -f sync_dashboards_with_services >/dev/null 2>&1; then
-        sync_dashboards_with_services
-    else
-        [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]] && source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
-        if declare -f sync_dashboards_with_services >/dev/null 2>&1; then
-            sync_dashboards_with_services
-        else
-            echo "[LEGACY-COMPAT] No dashboard sync system available" >&2
-            return 1
-        fi
-    fi
-}
+# Removed automatic dashboard syncing - users manage dashboards manually
 
 
 
-# Generate Prometheus scrape configs for discovered services
-
-generate_prometheus_targets_authoritative() {
-    local selected_networks=("$@")
-    local prometheus_configs=""
-    local processed_nodes=()  # Track processed nodes to avoid duplicates
-    
+# Generate basic Prometheus scrape config with only node-exporter
+generate_prometheus_targets_basic() {
     # Get the monitoring name from .env
     local monitoring_name="${MONITORING_NAME:-monitoring}"
-    prometheus_configs+="  - job_name: 'node-exporter'
+    echo "  - job_name: 'Node metrics'
     static_configs:
       - targets: ['${monitoring_name}-node-exporter:9100']
 
 "
-    
-    # Process each selected network
-    for network in "${selected_networks[@]}"; do
-        if [[ "$network" == "validator-net" || "$network" == "monitoring-net" ]]; then
-            # For validator-net/monitoring-net, discover all ethnode services
-            for dir in "$HOME"/ethnode*; do
-                if [[ -d "$dir" && -f "$dir/.env" ]]; then
-                    local node_name=$(basename "$dir")
-                    local node_dir="$dir"
-                    
-                    # Skip if already processed
-                    if [[ ! " ${processed_nodes[*]} " =~ " ${node_name} " ]]; then
-                        generate_targets_for_node "$node_name" "$node_dir" prometheus_configs
-                        processed_nodes+=("$node_name")
-                    fi
-                fi
-            done
-        else
-            # Individual network support (e.g., ethnode1-net, ethnode2-net)
-            local node_name="${network%-net}"
-            local node_dir="$HOME/$node_name"
-            
-            # Skip if already processed
-            if [[ ! " ${processed_nodes[*]} " =~ " ${node_name} " ]] && [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
-                generate_targets_for_node "$node_name" "$node_dir" prometheus_configs
-                processed_nodes+=("$node_name")
-            fi
-        fi
-    done
-    
-    # Add validator services (only once, regardless of networks)
-    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
-        prometheus_configs+="  - job_name: 'vero'
-    static_configs:
-      - targets: ['vero:9010']
-
-"
-    fi
-    
-    if [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" ]]; then
-        prometheus_configs+="  - job_name: 'teku-validator'
-    static_configs:
-      - targets: ['teku-validator:8008']
-
-"
-    fi
-    
-    echo "$prometheus_configs"
-}
-
-# Helper function to generate targets for a specific node
-generate_targets_for_node() {
-    local node_name="$1"
-    local node_dir="$2"
-    local -n configs_ref="$3"
-    
-    if [[ -d "$node_dir" && -f "$node_dir/.env" ]]; then
-        # Parse client types from compose file directly
-        local compose_file=$(grep "COMPOSE_FILE=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2)
-        
-        # Detect execution client
-        local exec_client=""
-        if [[ "$compose_file" == *"reth"* ]]; then
-            exec_client="reth"
-        elif [[ "$compose_file" == *"besu"* ]]; then
-            exec_client="besu"
-        elif [[ "$compose_file" == *"nethermind"* ]]; then
-            exec_client="nethermind"
-        fi
-        
-        # Detect consensus client
-        local cons_client=""
-        if [[ "$compose_file" == *"teku"* ]]; then
-            cons_client="teku"
-        elif [[ "$compose_file" == *"grandine"* ]]; then
-            cons_client="grandine"
-        elif [[ "$compose_file" == *"lodestar"* ]]; then
-            cons_client="lodestar"
-        elif [[ "$compose_file" == *"lighthouse"* ]]; then
-            cons_client="lighthouse"
-        fi
-        
-        # Get metrics ports from .env
-        if [[ "$exec_client" == "reth" ]]; then
-            configs_ref+="  - job_name: '${node_name}-reth'
-    static_configs:
-      - targets: ['${node_name}-reth:9001']
-        labels:
-          node: '${node_name}'
-          client: 'reth'
-          instance: '${node_name}-reth:9001'
-
-"
-        elif [[ "$exec_client" == "besu" ]]; then
-            # Add proper labels for Besu dashboard compatibility
-            configs_ref+="  - job_name: '${node_name}-besu'
-    static_configs:
-      - targets: ['${node_name}-besu:6060']
-        labels:
-          node: '${node_name}'
-          client: 'besu'
-          instance: '${node_name}-besu:6060'
-          system: '${node_name}-besu:6060'  # For dashboard compatibility
-
-"
-        elif [[ "$exec_client" == "nethermind" ]]; then
-            configs_ref+="  - job_name: '${node_name}-nethermind'
-    static_configs:
-      - targets: ['${node_name}-nethermind:6060']
-        labels:
-          node: '${node_name}'
-          client: 'nethermind'
-          instance: '${node_name}-nethermind:6060'
-
-"
-        fi
-        
-        # Consensus clients all use port 8008
-        if [[ -n "$cons_client" && "$cons_client" != "unknown" ]]; then
-            configs_ref+="  - job_name: '${node_name}-${cons_client}'
-    static_configs:
-      - targets: ['${node_name}-${cons_client}:8008']
-        labels:
-          node: '${node_name}'
-          client: '${cons_client}'
-          instance: '${node_name}-${cons_client}:8008'
-
-"
-        fi
-    fi
 }
 
 # Monitoring management menu
@@ -246,7 +82,7 @@ manage_monitoring_menu() {
         local menu_options=(
             "$monitoring_status"
             "View logs"
-            "See Grafana login information"
+            "Grafana Dashboards"
             "Update monitoring"
             "Remove monitoring"
             "Back to main menu"
@@ -263,7 +99,8 @@ manage_monitoring_menu() {
                     else
                         echo -e "${RED}✗ Universal Lifecycle System not available${NC}"
                     fi
-                    press_enter
+                    echo -e "${UI_MUTED}Press Enter to return to menu...${NC}"
+                    read -r
                     ;;
                 "Stop monitoring")
                     echo -e "${UI_MUTED}Stopping monitoring services...${NC}"
@@ -273,13 +110,14 @@ manage_monitoring_menu() {
                     else
                         echo -e "${RED}✗ Universal Lifecycle System not available${NC}"
                     fi
-                    press_enter
+                    echo -e "${UI_MUTED}Press Enter to return to menu...${NC}"
+                    read -r
                     ;;
                 "Start/stop monitoring")
                     manage_monitoring_state
                     ;;
-                "See Grafana login information")
-                    view_grafana_credentials
+                "Grafana Dashboards")
+                    show_grafana_dashboards_menu
                     ;;
                 "View logs")
                     view_monitoring_logs
@@ -375,14 +213,20 @@ check_monitoring_health() {
             node_exporter_status="${RED}✗${NC}"
         fi
         
-        printf "     %b %-20s (%s)%b\t     http://%s:%s/dashboards\n" "$grafana_status" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
-        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" "$prometheus_status" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
-        printf "     %b %-20s (%s)%b\n" "$node_exporter_status" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
+        printf "     %b %-25s (%s)%b\t     http://%s:%s/dashboards\n" \
+            "$grafana_status" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+        printf "     %b %-25s (%s)%b\t     http://%s:%s\n" \
+            "$prometheus_status" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
+        printf "     %b %-25s (%s)%b\n" \
+            "$node_exporter_status" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     else
         echo -e "  ${RED}●${NC} monitoring - ${RED}Stopped${NC}"
-        printf "     %-20s (%s)%b\t     http://%s:%s/dashboards\n" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
-        printf "     %-20s (%s)%b\t     http://%s:%s\n" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
-        printf "     %-20s (%s)%b\n" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
+        printf "     %-25s (%s)%b\t     http://%s:%s/dashboards\n" \
+            "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+        printf "     %-25s (%s)%b\t     http://%s:%s\n" \
+            "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
+        printf "     %-25s (%s)%b\n" \
+            "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     fi
     echo
     echo
@@ -435,7 +279,7 @@ manage_services_menu() {
                 esac
             else
                 case $selection in
-                    0) install_monitoring_services_with_dicks ;;
+                    0) install_monitoring_services_with_networks ;;
                     1) return ;;
                 esac
             fi
@@ -518,3 +362,138 @@ view_monitoring_logs() {
         fi
     fi
 }
+
+# View Grafana credentials
+show_grafana_dashboards_menu() {
+    if [[ ! -d "$HOME/monitoring" ]]; then
+        echo -e "${RED}✗ Monitoring not installed${NC}"
+        echo
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    clear
+    print_header
+    
+    echo -e "${CYAN}${BOLD}Grafana Dashboards${NC}"
+    echo "=================="
+    echo
+    
+    # Show login information first
+    echo -e "${BOLD}Step 1: Access Grafana${NC}"
+    
+    # Get server IP, port, and password from .env
+    local server_ip
+    local grafana_port="3000"
+    local grafana_password="admin"
+    
+    if [[ -f "$HOME/monitoring/.env" ]]; then
+        local bind_ip=$(grep "GRAFANA_BIND_IP=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null || echo "127.0.0.1")
+        grafana_port=$(grep "GRAFANA_PORT=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null || echo "3000")
+        grafana_password=$(grep "GRAFANA_PASSWORD=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null || echo "admin")
+        
+        # Get actual machine IP instead of localhost
+        if [[ "$bind_ip" == "127.0.0.1" || "$bind_ip" == "localhost" ]]; then
+            # Get the machine's actual IP address
+            server_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}' || echo "localhost")
+        else
+            server_ip="$bind_ip"
+        fi
+        
+        echo "  Go to: http://${server_ip}:${grafana_port}/"
+        echo "  Username: admin"
+        echo "  Password: ${grafana_password}"
+        echo
+    else
+        echo -e "${RED}Error: Monitoring not configured${NC}"
+        echo -e "${UI_MUTED}Press Enter to return to menu...${NC}"
+        read -r
+        return
+    fi
+    
+    echo -e "${BOLD}Step 2: Import Dashboards${NC}"
+    echo "  • Click 'Dashboards' in the left sidebar"
+    echo "  • Click 'New' in the top right corner"
+    echo "  • Click 'Import'"
+    echo "  • Add Grafana URL/ID or paste JSON"
+    echo "  • Click 'Load'"
+    echo "  • Click datasource dropdown, select 'Prometheus'"
+    echo "  • Click 'Import'"
+    echo
+    
+    echo -e "${BOLD}Step 3: Available Dashboards${NC}"
+    echo
+    echo -e "${YELLOW}System Dashboards:${NC}"
+    echo "  • Node Exporter: Enter dashboard ID - 1860"
+    echo
+    
+    echo -e "${YELLOW}Execution Client Dashboards:${NC}"
+    echo "  • Nethermind: Enter dashboard ID - 16277"
+    echo "  • Besu: Enter dashboard ID - 10273"
+    echo "  • Reth: https://github.com/paradigmxyz/reth/blob/main/etc/grafana/dashboards/overview.json"
+    echo
+    
+    echo -e "${YELLOW}Consensus Client Dashboards:${NC}"
+    echo "  • Teku: Enter dashboard ID - 16737"
+    echo "  • Lodestar: https://raw.githubusercontent.com/ChainSafe/lodestar/stable/dashboards/lodestar_summary.json"
+    echo "  • Grandine: https://github.com/grandinetech/grandine/raw/develop/prometheus_metrics/dashboards/overview.json"
+    echo
+    
+    echo -e "${YELLOW}Validator Dashboards:${NC}"
+    echo "  • Teku Validator: Use the same dashboard as consensus client (validator information displayed on top)"
+    echo "  • Vero Validator: https://github.com/serenita-org/vero/tree/master/grafana"
+    echo
+    
+    echo -e "${UI_MUTED}Press Enter to return to menu...${NC}"
+    read -r
+}
+
+# Legacy function kept for compatibility
+view_grafana_credentials() {
+    if [[ ! -d "$HOME/monitoring" ]]; then
+        echo -e "${RED}✗ Monitoring not installed${NC}"
+        echo
+        echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+        read -r
+        return
+    fi
+    
+    # Clear the menu area while keeping the dashboard
+    printf '\033[10A\033[J'  # Move up 10 lines and clear from cursor to end of screen
+    
+    echo -e "${CYAN}${BOLD}Grafana Login Information${NC}"
+    echo "========================="
+    echo
+    
+    # Extract info from .env file
+    local grafana_port="3000"
+    local grafana_password=""
+    local bind_ip="127.0.0.1"
+    
+    if [[ -f "$HOME/monitoring/.env" ]]; then
+        grafana_port=$(grep "^GRAFANA_PORT=" "$HOME/monitoring/.env" | cut -d'=' -f2)
+        grafana_password=$(grep "^GRAFANA_PASSWORD=" "$HOME/monitoring/.env" | cut -d'=' -f2)
+        bind_ip=$(grep "^BIND_IP=" "$HOME/monitoring/.env" | cut -d'=' -f2)
+    fi
+    
+    echo -e "${BOLD}Access URL:${NC}"
+    if [[ "$bind_ip" == "0.0.0.0" ]]; then
+        local local_ip=$(ip route get 1 2>/dev/null | awk '/src/ {print $7}' || hostname -I | awk '{print $1}')
+        echo "  http://${local_ip}:${grafana_port}"
+        echo "  http://localhost:${grafana_port}"
+    else
+        echo "  http://${bind_ip}:${grafana_port}"
+    fi
+    
+    echo
+    echo -e "${BOLD}Login Credentials:${NC}"
+    echo "  Username: admin"
+    echo "  Password: ${grafana_password}"
+    
+    echo
+    echo -e "${UI_MUTED}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Show dashboard import instructions

@@ -7,19 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export NODEBOI_LIB="${NODEBOI_LIB:-$SCRIPT_DIR}"
 
 # Source dependencies
-[[ -f "${NODEBOI_LIB}/service-registry.sh" ]] && source "${NODEBOI_LIB}/service-registry.sh"
 [[ -f "${NODEBOI_LIB}/lifecycle-hooks.sh" ]] && source "${NODEBOI_LIB}/lifecycle-hooks.sh"
 
-# Initialize registry if needed
-if declare -f initialize_registry >/dev/null 2>&1; then
-    initialize_registry
-fi
-
-# Colors for lifecycle logging
-LC_INFO='\033[0;36m'
-LC_SUCCESS='\033[0;32m'
-LC_WARNING='\033[1;33m'
-LC_ERROR='\033[0;31m'
+# Colors for lifecycle logging - muted grey for clean output
+LC_INFO='\033[38;5;240m'
+LC_SUCCESS='\033[38;5;240m'
+LC_WARNING='\033[38;5;240m'
+LC_ERROR='\033[38;5;240m'
 LC_RESET='\033[0m'
 
 log_lifecycle() {
@@ -50,20 +44,21 @@ remove_service() {
     log_lifecycle "Starting removal of service: $service_name"
     
     # 1. Validate service exists
-    if ! is_service_registered "$service_name"; then
-        log_lifecycle_warning "Service '$service_name' not found in registry"
-        # Check if it exists in filesystem anyway
-        if [[ ! -d "$HOME/$service_name" ]]; then
-            log_lifecycle_error "Service '$service_name' does not exist"
-            return 1
-        fi
+    if [[ ! -d "$HOME/$service_name" ]]; then
+        log_lifecycle_error "Service '$service_name' does not exist"
+        return 1
     fi
     
     # 2. Get service info to determine type
     local service_info=$(get_service_info "$service_name" 2>/dev/null)
     local service_type="unknown"
-    if [[ $? -eq 0 ]]; then
-        service_type=$(echo "$service_info" | jq -r '.type' 2>/dev/null || echo "unknown")
+    if [[ $? -eq 0 ]] && [[ -n "$service_info" ]]; then
+        service_type=$(echo "$service_info" | jq -r '.type' 2>/dev/null)
+    fi
+    
+    # Ensure service_type is not empty or null
+    if [[ -z "$service_type" ]] || [[ "$service_type" == "null" ]]; then
+        service_type="unknown"
     fi
     
     # If we still don't know the type, infer from name
@@ -107,16 +102,7 @@ remove_service() {
             ;;
     esac
     
-    # 4. Unregister from service registry
-    if is_service_registered "$service_name"; then
-        log_lifecycle "Unregistering service from registry"
-        if unregister_service "$service_name"; then
-            log_lifecycle_success "Service unregistered from registry"
-        else
-            log_lifecycle_error "Failed to unregister service from registry"
-            return 1
-        fi
-    fi
+    # 4. Service cleanup completed
     
     # 5. Trigger event-driven dashboard refresh
     log_lifecycle "Triggering dashboard refresh after removal"
@@ -130,7 +116,7 @@ remove_service() {
     return 0
 }
 
-# Central service registration function - combines registry and potential future install hooks
+# Central service lifecycle function for post-install operations
 register_service_lifecycle() {
     local service_name="$1"
     local service_type="$2"
@@ -142,21 +128,13 @@ register_service_lifecycle() {
         return 1
     fi
     
-    log_lifecycle "Registering service: $service_name ($service_type)"
+    log_lifecycle "Completing post-install operations for service: $service_name ($service_type)"
     
-    # 1. Register in service registry
-    if register_service "$service_name" "$service_type" "$service_path" "$status"; then
-        log_lifecycle_success "Service registered: $service_name"
-    else
-        log_lifecycle_error "Failed to register service: $service_name"
-        return 1
-    fi
-    
-    # 2. Future: Post-install hooks could go here
+    # 1. Future: Post-install hooks could go here
     # trigger_post_install_hooks "$service_type" "$service_name"
     
-    # 3. Trigger event-driven dashboard refresh
-    log_lifecycle "Triggering dashboard refresh after registration"
+    # 2. Trigger event-driven dashboard refresh
+    log_lifecycle "Triggering dashboard refresh after service setup"
     if trigger_dashboard_refresh "service_registered" "$service_name"; then
         log_lifecycle_success "Dashboard refreshed"
     else
@@ -176,23 +154,14 @@ update_service_status() {
         return 1
     fi
     
-    log_lifecycle "Updating status for $service_name to $new_status"
+    log_lifecycle "Status update requested for $service_name: $new_status"
     
-    # This would update the registry status
-    # For now, just re-register with new status
-    local service_info=$(get_service_info "$service_name" 2>/dev/null)
-    if [[ $? -eq 0 ]]; then
-        local service_type=$(echo "$service_info" | jq -r '.type' 2>/dev/null || echo "unknown")
-        local service_path=$(echo "$service_info" | jq -r '.path' 2>/dev/null || echo "$HOME/$service_name")
-        
-        register_service "$service_name" "$service_type" "$service_path" "$new_status"
-    else
-        log_lifecycle_warning "Could not get service info for status update"
-        return 1
-    fi
+    # Without a registry, status is tracked by Docker container state
+    log_lifecycle "Service status is managed through Docker container lifecycle"
+    return 0
 }
 
-# Get comprehensive service status (registry + live check)
+# Get service status (live Docker check)
 get_service_status() {
     local service_name="$1"
     
@@ -201,14 +170,7 @@ get_service_status() {
         return 1
     fi
     
-    # Get registry info
-    local registry_info=$(get_service_info "$service_name" 2>/dev/null)
-    local registry_status="unknown"
-    if [[ $? -eq 0 ]]; then
-        registry_status=$(echo "$registry_info" | jq -r '.status' 2>/dev/null || echo "unknown")
-    fi
-    
-    # Get live status
+    # Get live status from Docker
     local live_status="stopped"
     if [[ -d "$HOME/$service_name" ]]; then
         if cd "$HOME/$service_name" 2>/dev/null && docker compose ps 2>/dev/null | grep -q "Up"; then
@@ -216,11 +178,10 @@ get_service_status() {
         fi
     fi
     
-    # Return combined status
+    # Return status
     echo "{
-  \"registry_status\": \"$registry_status\",
-  \"live_status\": \"$live_status\",
-  \"synchronized\": $([ "$registry_status" = "$live_status" ] && echo "true" || echo "false")
+  \"status\": \"$live_status\",
+  \"path\": \"$HOME/$service_name\"
 }"
 }
 
@@ -304,16 +265,19 @@ test_service_lifecycle() {
     
     # Verify removal
     echo "4. Verifying service was removed..."
-    if ! is_service_registered "test-lifecycle-service"; then
-        echo "   ✓ Service successfully removed from registry"
+    if [[ ! -d "/tmp/test-lifecycle" ]]; then
+        echo "   ✓ Service successfully removed from filesystem"
     else
-        echo "   ✗ Service still in registry after removal"
+        echo "   ✗ Service directory still exists after removal"
         return 1
     fi
     
     echo "✓ All service lifecycle integration tests passed!"
     return 0
 }
+
+# Export functions for use by other modules
+export -f trigger_dashboard_refresh
 
 # If script is run directly, run test
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

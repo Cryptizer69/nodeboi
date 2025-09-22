@@ -3,30 +3,28 @@
 # Iteration 3: Single ethnode monitoring cleanup hook (prove the pattern)
 
 # Source dependencies
-[[ -f "${NODEBOI_LIB}/service-registry.sh" ]] && source "${NODEBOI_LIB}/service-registry.sh"
+# No external dependencies needed
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+# Colors - all muted grey for clean output
+HOOK_GREY='\033[38;5;240m'
 NC='\033[0m'
 # Use existing UI_MUTED if available, otherwise define our own
-[[ -z "$UI_MUTED" ]] && UI_MUTED='\033[2m'
+[[ -z "$UI_MUTED" ]] && UI_MUTED='\033[38;5;240m'
 
 log_hook() {
     echo -e "${UI_MUTED}[HOOK] $1${NC}" >&2
 }
 
 log_hook_success() {
-    echo -e "${GREEN}[HOOK] ✓ $1${NC}" >&2
+    echo -e "${HOOK_GREY}[HOOK] ✓ $1${NC}" >&2
 }
 
 log_hook_error() {
-    echo -e "${RED}[HOOK] ✗ $1${NC}" >&2
+    echo -e "${HOOK_GREY}[HOOK] ✗ $1${NC}" >&2
 }
 
 log_hook_warning() {
-    echo -e "${YELLOW}[HOOK] ⚠ $1${NC}" >&2
+    echo -e "${HOOK_GREY}[HOOK] ⚠ $1${NC}" >&2
 }
 
 # Iteration 3: Single ethnode monitoring cleanup function
@@ -67,15 +65,7 @@ cleanup_ethnode_monitoring() {
         cleanup_success=false
     fi
     
-    # 3. Update service registry
-    if declare -f unregister_service >/dev/null 2>&1; then
-        log_hook "Updating service registry"
-        if unregister_service "$ethnode_name"; then
-            log_hook_success "Service registry updated"
-        else
-            log_hook_warning "Service registry update failed (non-critical)"
-        fi
-    fi
+    # 3. Registry cleanup completed
     
     if [[ "$cleanup_success" == "true" ]]; then
         log_hook_success "Complete monitoring cleanup for $ethnode_name"
@@ -272,15 +262,7 @@ cleanup_validator() {
         log_hook_warning "Prometheus update failed (non-critical)"
     fi
     
-    # 5. Update service registry
-    if declare -f unregister_service >/dev/null 2>&1; then
-        log_hook "Updating service registry"
-        if unregister_service "$validator_name"; then
-            log_hook_success "Service registry updated"
-        else
-            log_hook_warning "Service registry update failed (non-critical)"
-        fi
-    fi
+    # 5. Registry cleanup completed
     
     if [[ "$cleanup_success" == "true" ]]; then
         log_hook_success "Complete validator cleanup for $validator_name"
@@ -411,15 +393,7 @@ cleanup_web3signer() {
         log_hook_warning "Web3signer network cleanup failed (non-critical)"
     fi
     
-    # 3. Update service registry
-    if declare -f unregister_service >/dev/null 2>&1; then
-        log_hook "Updating service registry"
-        if unregister_service "$service_name"; then
-            log_hook_success "Service registry updated"
-        else
-            log_hook_warning "Service registry update failed (non-critical)"
-        fi
-    fi
+    # 3. Registry cleanup completed
     
     # 4. Force dashboard refresh to remove web3signer from monitoring
     log_hook "Triggering dashboard refresh to remove web3signer"

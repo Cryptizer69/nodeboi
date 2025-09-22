@@ -5,6 +5,7 @@
 [[ -f "${NODEBOI_LIB}/port-manager.sh" ]] && source "${NODEBOI_LIB}/port-manager.sh"
 [[ -f "${NODEBOI_LIB}/clients.sh" ]] && source "${NODEBOI_LIB}/clients.sh"
 [[ -f "${NODEBOI_LIB}/network-manager.sh" ]] && source "${NODEBOI_LIB}/network-manager.sh"
+[[ -f "${NODEBOI_LIB}/templates.sh" ]] && source "${NODEBOI_LIB}/templates.sh"
 
 INSTALL_DIR="$HOME/.nodeboi"
 
@@ -68,7 +69,7 @@ interactive_key_import() {
             return 1
         else
             # Show immediate feedback about keys found
-            local keystore_count=$(find "$keystore_location" -name "keystore-*.json" 2>/dev/null | wc -l)
+            local keystore_count=$(find "$keystore_location" -maxdepth 1 -name "keystore-*.json" 2>/dev/null | wc -l)
             if [[ "$keystore_count" -eq 0 ]]; then
                 echo "✗ No keystore files found in $keystore_location"
                 echo "Please check the directory contains keystore-*.json files."
@@ -188,8 +189,8 @@ install_web3signer() {
     # Set error trap
     trap cleanup_failed_installation ERR INT TERM
     
-    # Check for existing installation
-    if [[ -d "$service_dir" ]]; then
+    # Check for existing installation - look for actual web3signer files
+    if [[ -d "$service_dir" ]] && [[ -f "$service_dir/docker-compose.yml" || -f "$service_dir/.env" ]]; then
         echo "Web3signer is already installed at $service_dir"
         echo "Please remove it first if you want to reinstall"
         return 1
@@ -244,35 +245,20 @@ install_web3signer() {
         return 1
     fi
     
-    # Version selection with fancy menu
-    local version_options=("Manually enter version (recommended)" "Use latest version")
-    local version_selection
-    if version_selection=$(fancy_select_menu "Select Web3signer Version" "${version_options[@]}"); then
-        case $version_selection in
-            0)
-                # Manual version entry
-                local web3signer_version
-                web3signer_version=$(fancy_text_input "Web3signer Version" \
-                    "Enter Web3signer version (e.g., 25.9.0):" \
-                    "25.9.0" \
-                    "")
-                
-                if [[ -z "$web3signer_version" ]]; then
-                    echo "✗ Version cannot be empty"
-                    return 1
-                fi
-                
-                echo -e "${UI_MUTED}✓ Using Web3signer version: ${web3signer_version}${NC}"
-                ;;
-            1)
-                # Use latest
-                local web3signer_version="latest"
-                echo -e "${UI_MUTED}✓ Using latest Web3signer version${NC}"
-                ;;
-        esac
+    # Streamlined version selection with default
+    local default_version=$(get_default_version "web3signer" 2>/dev/null)
+    [[ -z "$default_version" ]] && default_version="25.9.0"
+    
+    local web3signer_version
+    web3signer_version=$(fancy_text_input "Web3signer Version" \
+        "Enter Web3signer version (e.g., 25.9.0):" \
+        "$default_version")
+    
+    if [[ -z "$web3signer_version" ]]; then
+        web3signer_version="$default_version"
+        echo -e "${UI_MUTED}✓ Using default Web3signer version: ${web3signer_version}${NC}"
     else
-        echo "Version selection cancelled"
-        return 1
+        echo -e "${UI_MUTED}✓ Using Web3signer version: ${web3signer_version}${NC}"
     fi
     
     # Use placeholder values for atomic installation
@@ -289,8 +275,14 @@ install_web3signer() {
         exit 1
     fi
     
-    create_web3signer_env_file "$staging_dir" "$postgres_password" "$keystore_password" "$selected_network" "$keystore_location" "$web3signer_port" "$web3signer_version"
-    create_web3signer_compose_files "$staging_dir"
+    # Generate configuration using centralized templates
+    local node_uid=$(id -u)
+    local node_gid=$(id -g)
+    generate_web3signer_env "$staging_dir" "$postgres_password" "$keystore_password" "$selected_network" "$keystore_location" "$web3signer_port" "$web3signer_version" "$node_uid" "$node_gid"
+    generate_web3signer_compose "$staging_dir"
+    
+    # Generate helper scripts (not yet centralized)
+    create_web3signer_entrypoint_script "$staging_dir"
     create_web3signer_helper_scripts "$staging_dir"
     
     echo -e "${UI_MUTED}✓ Configuration files created${NC}"
@@ -300,7 +292,7 @@ install_web3signer() {
     cd "$staging_dir"
     
     echo -e "${UI_MUTED}Downloading Docker images (this may take a few minutes)...${NC}"
-    if docker compose pull 2>&1 | while read line; do echo -e "${UI_MUTED}  $line${NC}"; done; then
+    if docker compose -p web3signer pull 2>&1 | while read line; do echo -e "${UI_MUTED}  $line${NC}"; done; then
         echo -e "${UI_MUTED}✓ Images downloaded successfully${NC}"
     else
         echo "✗ Failed to download Docker images"
@@ -310,9 +302,9 @@ install_web3signer() {
     echo -e "${UI_MUTED}✓ Configuration prepared for atomic installation${NC}"
     
     # Test if compose file is valid
-    if ! docker compose config >/dev/null 2>&1; then
+    if ! docker compose -p web3signer config >/dev/null 2>&1; then
         echo "✗ Docker compose file is invalid!" >&2
-        docker compose config 2>&1 | sed 's/^/  Error: /'
+        docker compose -p web3signer config 2>&1 | sed 's/^/  Error: /'
         return 1
     fi
     
@@ -328,43 +320,7 @@ install_web3signer() {
         echo -e "${UI_MUTED}✓ web3signer-net network already exists${NC}"
     fi
     
-    # Start containers in staging directory for health check
-    echo -e "${UI_MUTED}Starting Web3signer containers...${NC}"
-    docker compose up -d 2>&1 | while read line; do echo -e "${UI_MUTED}$line${NC}"; done
-    
-    # Wait for Web3signer to be ready (non-fatal - container startup is what matters)
-    echo -e "${UI_MUTED}Waiting for Web3signer to be ready...${NC}"
-    echo -e "${UI_MUTED}  Web3signer should be accessible at: http://localhost:${web3signer_port}/upcheck${NC}"
-    
-    # Give containers a moment to fully start before health checking
-    sleep 5
-    
-    # Disable error handling for health check (this should be non-fatal)
-    set +e
-    local attempts=0
-    local max_attempts=30  # Increased from 20 to 30 (90 seconds total)
-    
-    while ! curl -s http://localhost:${web3signer_port}/upcheck >/dev/null 2>&1; do
-        sleep 3
-        ((attempts++))
-        if [[ $attempts -gt $max_attempts ]]; then
-            echo -e "${YELLOW}⚠ Web3signer may need more time to fully initialize${NC}"
-            echo -e "${UI_MUTED}  This is normal for first-time setup${NC}"
-            break
-        fi
-        echo -e "${UI_MUTED}  Checking Web3signer health... (${attempts}/$max_attempts)${NC}"
-    done
-    
-    if curl -s http://localhost:${web3signer_port}/upcheck >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ Web3signer is running and healthy${NC}"
-    else
-        echo -e "${YELLOW}⚠ Web3signer container started successfully${NC}"
-        echo -e "${UI_MUTED}  Service may still be initializing - this is normal${NC}"
-    fi
-    
-    # Re-enable error handling after health check
-    set -e
-    trap cleanup_failed_installation ERR INT TERM
+    # Skip starting containers here - will start after atomic move
     
     echo
     
@@ -383,7 +339,7 @@ install_web3signer() {
     
     # Clean up any running containers from staging (they're now orphaned)
     cd "$service_dir"
-    docker compose down 2>/dev/null || true
+    docker compose -p web3signer down 2>/dev/null || true
     
     # Clean up any conflicting containers by name
     echo -e "${UI_MUTED}Cleaning up any existing containers...${NC}"
@@ -394,16 +350,30 @@ install_web3signer() {
     # Mark installation as successful
     installation_success=true
     
+    # Start containers via ULCS (after atomic move)
+    echo -e "${UI_MUTED}Starting Web3signer containers via ULCS...${NC}"
+    if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+        source "${NODEBOI_LIB}/ulcs.sh"
+        start_service_universal "web3signer" || {
+            echo -e "${YELLOW}Warning: ULCS start failed, using direct docker compose${NC}"
+            docker compose -p web3signer up -d 2>&1 | while read line; do echo -e "${UI_MUTED}$line${NC}"; done
+        }
+    else
+        echo -e "${UI_MUTED}ULCS not available, using direct docker compose${NC}"
+        docker compose -p web3signer up -d 2>&1 | while read line; do echo -e "${UI_MUTED}$line${NC}"; done
+    fi
+    
     # NOW start containers in final location (after atomic move)
     echo -e "${UI_MUTED}Starting Web3signer services...${NC}"
     
     # Start containers with proper error handling
-    if docker compose up -d 2>&1 | while read line; do echo -e "${UI_MUTED}$line${NC}"; done; then
+    if docker compose -p web3signer up -d 2>&1 | while read line; do echo -e "${UI_MUTED}$line${NC}"; done; then
         echo "✓ Web3signer services started successfully"
         
-        # Basic health check (non-fatal)
+        # Basic health check (non-fatal) - extended wait for key loading
         echo "Checking service health..."
-        sleep 5
+        echo -e "${UI_MUTED}Waiting for Web3signer to fully initialize and load keys...${NC}"
+        sleep 10
         if curl -s http://localhost:${web3signer_port}/upcheck >/dev/null 2>&1; then
             echo "✓ Web3signer is healthy and ready"
         else
@@ -437,6 +407,10 @@ install_web3signer() {
     set +o pipefail
     trap - ERR INT TERM
     
+    # Defensive cleanup: Remove staging directory if it somehow still exists
+    # (it shouldn't after mv, but this ensures complete cleanup)
+    [[ -d "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
+    
     # Ask user about key import
     echo -e "${GREEN}${BOLD}Ready for Key Import${NC}"
     echo "===================="
@@ -463,10 +437,20 @@ install_web3signer() {
         echo "Installation completed. You can import keys later through the main menu."
         press_enter
     fi
+    
+    # Set flag to return to main menu after ULCS operation
+    RETURN_TO_MAIN_MENU=true
 }
 
 # Install Vero (singleton only) - Atomic Installation
 install_vero() {
+    
+    # CRITICAL SAFETY CHECK: Prevent multiple validators
+    if ! check_validator_conflict "vero"; then
+        echo "ERROR: Cannot install Vero - validator conflict detected"
+        return 1
+    fi
+    
     # Enable strict error handling for transactional installation
     set -eE
     set -o pipefail
@@ -474,6 +458,7 @@ install_vero() {
     local service_dir="$HOME/vero"  # Final installation location
     local staging_dir="$HOME/.vero-install-$$"  # Temporary staging area  
     local installation_success=false
+    
     
     # Comprehensive error handling - cleanup on ANY failure
     cleanup_failed_vero_installation() {
@@ -513,8 +498,8 @@ install_vero() {
     # Set up traps for ALL types of failures
     trap 'cleanup_failed_vero_installation' ERR INT TERM
     
-    # Singleton check
-    if [[ -d "$service_dir" ]]; then
+    # Singleton check - look for actual Vero files
+    if [[ -d "$service_dir" ]] && [[ -f "$service_dir/docker-compose.yml" || -f "$service_dir/.env" ]]; then
         echo -e "${YELLOW}Vero is already installed${NC}"
         echo -e "${UI_MUTED}Only one Vero instance is supported${NC}"
         echo -e "${UI_MUTED}Location: ${service_dir}${NC}"
@@ -600,6 +585,10 @@ install_vero() {
         
         # Ensure UI functions are available
         [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
+        if ! declare -f fancy_select_menu >/dev/null 2>&1; then
+            echo "ERROR: fancy_select_menu function not available"
+            return 1
+        fi
         
         # Show fancy menu for selection
         local selection
@@ -618,6 +607,7 @@ install_vero() {
             return 1
         fi
     fi
+    
     
     # Get fee recipient with retry logic
     local fee_recipient
@@ -656,6 +646,7 @@ Fee recipient address:" \
         fi
     done
     
+    
     # Get graffiti
     local graffiti
     graffiti=$(fancy_text_input "Validator Setup" \
@@ -670,11 +661,39 @@ Fee recipient address:" \
     # Get network from Web3signer
     local network=$(grep "ETH2_NETWORK=" "$HOME/web3signer/.env" | cut -d'=' -f2)
     
-    # Create .env file
-    create_vero_env_file "$service_dir" "$network" "$fee_recipient" "$graffiti" "${selected_ethnodes[@]}"
+    # Build beacon URLs by detecting beacon clients
+    local beacon_urls=""
+    local web3signer_port="7500"
+    for ethnode in "${selected_ethnodes[@]}"; do
+        local ethnode_net="${ethnode}-net"
+        local beacon_client=""
+        
+        # Detect which beacon client is running
+        if docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-grandine"; then
+            beacon_client="grandine"
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lodestar"; then
+            beacon_client="lodestar"
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lighthouse"; then
+            beacon_client="lighthouse"
+        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-teku"; then
+            beacon_client="teku"
+        else
+            beacon_client="lodestar"  # Fallback
+        fi
+        
+        # Build beacon URL
+        if [[ -n "$beacon_urls" ]]; then
+            beacon_urls="${beacon_urls},http://${ethnode}:5052"
+        else
+            beacon_urls="http://${ethnode}:5052"
+        fi
+    done
     
-    # Create compose file
-    create_vero_compose_file "$service_dir" "${selected_ethnodes[@]}"
+    # Generate configuration using centralized templates
+    local node_uid=$(id -u)
+    local node_gid=$(id -g)
+    generate_vero_env "$service_dir" "$node_uid" "$node_gid" "$network" "$beacon_urls" "$web3signer_port" "$fee_recipient" "$graffiti"
+    generate_vero_compose "$service_dir" "${selected_ethnodes[@]}"
     
     echo -e "${GREEN}✓ Vero installed successfully!${NC}"
     echo
@@ -688,6 +707,11 @@ Fee recipient address:" \
     
     if [[ "$launch_choice" == "y" || "$launch_choice" == "" ]]; then
         echo -e "${UI_MUTED}Starting Vero validator...${NC}"
+        
+        # Ensure validator-net network exists
+        if ! docker network inspect validator-net >/dev/null 2>&1; then
+            docker network create validator-net >/dev/null 2>&1
+        fi
         
         # Start Vero (safety warning handled by manage_service)
         if manage_service "up" "vero"; then
@@ -712,6 +736,10 @@ Fee recipient address:" \
     set +o pipefail
     trap - ERR INT TERM
     
+    # Defensive cleanup: Remove staging directory if it somehow still exists
+    # (it shouldn't after the installation, but this ensures complete cleanup)
+    [[ -d "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
+    
     # Refresh monitoring dashboards and Prometheus configuration
     if [[ -f "${NODEBOI_LIB}/grafana-dashboard-management.sh" ]]; then
         source "${NODEBOI_LIB}/grafana-dashboard-management.sh" && refresh_monitoring_dashboards
@@ -723,226 +751,7 @@ Fee recipient address:" \
     press_enter
 }
 
-# Create Web3signer .env file
-create_web3signer_env_file() {
-    local service_dir="$1"
-    local postgres_password="$2"
-    local keystore_password="$3"
-    local network="$4"
-    local keystore_location="$5"
-    local web3signer_port="$6"
-    local web3signer_version="$7"
-    
-    local node_uid=$(id -u)
-    local node_gid=$(id -g)
-    
-    cat > "${service_dir}/.env" <<EOF
-#=============================================================================
-# WEB3SIGNER STACK CONFIGURATION  
-#=============================================================================
-# Docker network name for container communication
-WEB3SIGNER_NETWORK=web3signer
-
-# User mapping (auto-detected)
-W3S_UID=${node_uid}
-W3S_GID=${node_gid}
-
-#=============================================================================
-# API PORT BINDING
-#=============================================================================
-HOST_BIND_IP=127.0.0.1
-
-#============================================================================
-# NODE CONFIGURATION
-#============================================================================
-# Ethereum network (mainnet, sepolia, Hoodi, or custom URL)
-ETH2_NETWORK=${network}
-
-#=============================================================================
-# SERVICE CONFIGURATION
-#=============================================================================
-# PostgreSQL
-PG_DOCKER_TAG=16-bookworm
-POSTGRES_PORT=5432
-POSTGRES_PASSWORD=${postgres_password}
-
-# Web3signer
-WEB3SIGNER_VERSION=${web3signer_version}
-WEB3SIGNER_PORT=${web3signer_port}
-LOG_LEVEL=info
-JAVA_OPTS=-Xmx4g
-
-# Keystore configuration
-KEYSTORE_PASSWORD=${keystore_password}
-KEYSTORE_LOCATION=${keystore_location}
-
-# Migration safety marker
-MIGRATION_MARKER_FILE=/var/lib/web3signer/.migration_complete
-EOF
-
-    chmod 600 "${service_dir}/.env"
-}
-
-# Create Web3signer compose files
-create_web3signer_compose_files() {
-    local service_dir="$1"
-    
-    # Main compose file
-    cat > "${service_dir}/compose.yml" <<'EOF'
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  postgres:
-    image: postgres:${PG_DOCKER_TAG}
-    container_name: web3signer-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: web3signer
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - web3signer
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d web3signer"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    <<: *logging
-
-  web3signer-init:
-    image: consensys/web3signer:${WEB3SIGNER_VERSION}
-    container_name: web3signer-init
-    user: "0:0"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./web3signer_config:/config
-      - web3signer_data:/var/lib/web3signer
-      - ./docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro
-    entrypoint: ["/bin/bash", "-c"]
-    command: |
-      "set -e
-      echo 'Initializing Web3signer directories...'
-      
-      # Create migrations directory first
-      mkdir -p /config/migrations
-      
-      # Extract migrations for Flyway
-      cp -r /opt/web3signer/migrations/postgresql/* /config/migrations/ 2>/dev/null || true
-      
-      # Set up entrypoint
-      if [ -f /usr/local/bin/docker-entrypoint.sh ]; then
-        cp /usr/local/bin/docker-entrypoint.sh /var/lib/web3signer/docker-entrypoint.sh
-        chmod +x /var/lib/web3signer/docker-entrypoint.sh
-      fi
-      
-      # Set proper ownership
-      chown -R ${W3S_UID}:${W3S_GID} /var/lib/web3signer
-      chown -R ${W3S_UID}:${W3S_GID} /config
-      
-      echo 'Initialization complete'"
-    networks:
-      - web3signer
-
-  flyway:
-    image: flyway/flyway:10-alpine
-    container_name: web3signer-flyway
-    depends_on:
-      web3signer-init:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./web3signer_config/migrations:/flyway/sql:ro
-      - web3signer_data:/var/lib/web3signer
-    command: >
-      -url=jdbc:postgresql://postgres:5432/web3signer
-      -user=postgres
-      -password=${POSTGRES_PASSWORD}
-      -connectRetries=60
-      -mixed=true
-      migrate
-    environment:
-      - FLYWAY_PLACEHOLDERS_NETWORK=${ETH2_NETWORK}
-    networks:
-      - web3signer
-
-  web3signer:
-    image: consensys/web3signer:${WEB3SIGNER_VERSION}
-    container_name: web3signer
-    restart: unless-stopped
-    user: "${W3S_UID}:${W3S_GID}"
-    depends_on:
-      flyway:
-        condition: service_completed_successfully
-    ports:
-      - "${HOST_BIND_IP}:${WEB3SIGNER_PORT}:9000"
-    volumes:
-      - ./web3signer_config/keystores:/var/lib/web3signer/keystores:ro
-      - web3signer_data:/var/lib/web3signer
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - JAVA_OPTS=${JAVA_OPTS}
-      - ETH2_NETWORK=${ETH2_NETWORK}
-    entrypoint: ["/var/lib/web3signer/docker-entrypoint.sh"]
-    command: [
-      "/opt/web3signer/bin/web3signer",
-      "--http-listen-host=0.0.0.0",
-      "--http-listen-port=9000",
-      "--metrics-enabled",
-      "--metrics-host-allowlist=*",
-      "--http-host-allowlist=*",
-      "--logging=${LOG_LEVEL}",
-      "eth2",
-      "--keystores-path=/var/lib/web3signer/keystores",
-      "--keystores-passwords-path=/var/lib/web3signer/keystores",
-      "--key-manager-api-enabled=true",
-      "--slashing-protection-db-url=jdbc:postgresql://postgres:5432/web3signer",
-      "--slashing-protection-db-username=postgres",
-      "--slashing-protection-db-password=${POSTGRES_PASSWORD}",
-      "--slashing-protection-pruning-enabled=true"
-    ]
-    networks:
-      - web3signer
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/upcheck"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    labels:
-      - metrics.scrape=true
-      - metrics.path=/metrics
-      - metrics.port=9000
-      - metrics.instance=web3signer
-      - metrics.network=${ETH2_NETWORK}
-    <<: *logging
-
-volumes:
-  postgres_data:
-    name: web3signer_postgres_data
-  web3signer_data:
-    name: web3signer_data
-
-networks:
-  web3signer:
-    external: true
-    name: ${WEB3SIGNER_NETWORK}-net
-EOF
-
-    # Docker entrypoint script
-    create_web3signer_entrypoint_script "$service_dir"
-}
+# Legacy functions removed - using centralized templates directly
 
 # Create Web3signer entrypoint script
 create_web3signer_entrypoint_script() {
@@ -1034,7 +843,7 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # Load environment
-source ~/.nodeboi/lib/ui.sh 2>/dev/null || true
+# source ~/.nodeboi/lib/ui.sh 2>/dev/null || true
 source ~/web3signer/.env
 
 # Verify password is set
@@ -1094,7 +903,7 @@ if [ ! -d "$KEYSTORE_SOURCE" ]; then
 fi
 
 # Check for keystores in source
-KEYSTORE_COUNT=$(find "$KEYSTORE_SOURCE" -name "keystore-*.json" 2>/dev/null | wc -l)
+KEYSTORE_COUNT=$(find "$KEYSTORE_SOURCE" -maxdepth 1 -name "keystore-*.json" 2>/dev/null | wc -l)
 if [ "$KEYSTORE_COUNT" -eq 0 ]; then
     echo "${RED}ERROR: No keystore files found in $KEYSTORE_SOURCE${NC}"
     exit 1
@@ -1103,7 +912,7 @@ fi
 echo "Found $KEYSTORE_COUNT keystore files to process"
 
 # Backup existing keys if any
-if find "$TARGET_DIR" -name "keystore-*.json" 2>/dev/null | grep -q .; then
+if find "$TARGET_DIR" -maxdepth 1 -name "keystore-*.json" 2>/dev/null | grep -q .; then
     echo "${YELLOW}Creating backup of existing keys...${NC}"
     mkdir -p "$BACKUP_DIR"
     cp -r "$TARGET_DIR"/* "$BACKUP_DIR/" 2>/dev/null || true
@@ -1179,148 +988,7 @@ EOF
     chmod +x "${service_dir}/import-keys.sh"
 }
 
-# Create Vero .env file
-create_vero_env_file() {
-    local service_dir="$1"
-    local network="$2"
-    local fee_recipient="$3"
-    local graffiti="$4"
-    shift 4
-    local ethnodes=("$@")
-    
-    # Build beacon node URLs by detecting the actual beacon client
-    local beacon_urls=""
-    for ethnode in "${ethnodes[@]}"; do
-        # Detect beacon client by checking Docker network containers
-        local beacon_client=""
-        
-        # Check which beacon client is running in isolated ethnode network
-        local ethnode_net="${ethnode}-net"
-        if docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-grandine"; then
-            beacon_client="grandine"
-        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lodestar"; then
-            beacon_client="lodestar"
-        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-lighthouse"; then
-            beacon_client="lighthouse"
-        elif docker network inspect "${ethnode_net}" --format '{{range $id, $config := .Containers}}{{$config.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -q "${ethnode}-teku"; then
-            beacon_client="teku"
-        else
-            # Fallback - assume lodestar for backward compatibility
-            beacon_client="lodestar"
-        fi
-        
-        # CRITICAL FIX: Always use port 5052 for internal container communication
-        # All consensus clients expose their REST API on port 5052 internally
-        if [[ -z "$beacon_urls" ]]; then
-            beacon_urls="http://${ethnode}-${beacon_client}:5052"
-        else
-            beacon_urls="${beacon_urls},http://${ethnode}-${beacon_client}:5052"
-        fi
-    done
-    
-    local node_uid=$(id -u)
-    local node_gid=$(id -g)
-    
-    cat > "${service_dir}/.env" <<EOF
-# =============================================================================
-# VERO VALIDATOR CONFIGURATION
-# =============================================================================
-# Stack identification
-VERO_NETWORK=vero
-
-# User mapping (auto-detected)
-VERO_UID=${node_uid}
-VERO_GID=${node_gid}
-
-# Network binding for metrics port
-HOST_BIND_IP=127.0.0.1
-
-# Ethereum network
-ETH2_NETWORK=${network}
-
-# =============================================================================
-# CONNECTION CONFIGURATION
-# =============================================================================
-# Beacon node connections
-BEACON_NODE_URLS=${beacon_urls}
-
-# Web3signer connection
-WEB3SIGNER_URL=http://web3signer:9000
-
-# Consensus settings - how many beacon nodes must agree on attestation data
-# Set to number of beacon nodes for maximum safety, or 1 for single node setups
-ATTESTATION_CONSENSUS_THRESHOLD=1
-
-# =============================================================================
-# VALIDATOR CONFIGURATION
-# =============================================================================
-# Validator settings
-FEE_RECIPIENT=${fee_recipient}
-GRAFFITI=${graffiti}
-
-# =============================================================================
-# SERVICE CONFIGURATION
-# =============================================================================
-# Vero
-VERO_VERSION=v1.2.0
-VERO_METRICS_PORT=9010
-LOG_LEVEL=INFO
-EOF
-
-    chmod 600 "${service_dir}/.env"
-}
-
-# Create Vero compose file
-create_vero_compose_file() {
-    local service_dir="$1"
-    shift 1
-    local ethnodes=("$@")
-    
-    cat > "${service_dir}/compose.yml" <<EOF
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  vero:
-    image: ghcr.io/serenita-org/vero:\${VERO_VERSION}
-    container_name: vero
-    restart: unless-stopped
-    user: "\${VERO_UID}:\${VERO_GID}"
-    environment:
-      - LOG_LEVEL=\${LOG_LEVEL}
-    ports:
-      - "\${HOST_BIND_IP}:\${VERO_METRICS_PORT}:\${VERO_METRICS_PORT}"
-    command: [
-      "--network=\${ETH2_NETWORK}",
-      "--beacon-node-urls=\${BEACON_NODE_URLS}",
-      "--remote-signer-url=\${WEB3SIGNER_URL}",
-      "--fee-recipient=\${FEE_RECIPIENT}",
-      "--graffiti=\${GRAFFITI}",
-      "--metrics-address=0.0.0.0",
-      "--metrics-port=\${VERO_METRICS_PORT}",
-      "--log-level=\${LOG_LEVEL}",
-      "--attestation-consensus-threshold=\${ATTESTATION_CONSENSUS_THRESHOLD:-1}",
-      "--enable-doppelganger-detection"
-    ]
-    networks:
-      - validator-net
-      - web3signer-net$(for ethnode in "${ethnodes[@]}"; do echo ""; echo "      - ${ethnode}-net"; done)
-    <<: *logging
-
-networks:
-  validator-net:
-    external: true
-    name: validator-net
-  web3signer-net:
-    external: true
-    name: web3signer-net$(for ethnode in "${ethnodes[@]}"; do echo ""; echo "  ${ethnode}-net:"; echo "    external: true"; echo "    name: ${ethnode}-net"; done)
-EOF
-}
+# Legacy Vero functions removed - using centralized templates directly
 
 # Conservative Web3signer update with warnings
 update_web3signer() {
@@ -1366,10 +1034,12 @@ update_web3signer() {
     
     # Get new version
     local new_version
+    local default_version=$(get_latest_version "web3signer" 2>/dev/null)
+    [[ -z "$default_version" ]] && default_version="25.9.0"
+    
     new_version=$(fancy_text_input "Web3signer Update" \
         "Enter new version (e.g., 25.7.0):" \
-        "" \
-        "")
+        "$default_version")
     
     if [[ -z "$new_version" ]]; then
         echo -e "${RED}Version cannot be empty${NC}"
@@ -1392,8 +1062,7 @@ update_web3signer() {
     
     # Wait a moment and check health
     sleep 5
-    local web3signer_port=$(grep "WEB3SIGNER_PORT=" ~/web3signer/.env | cut -d'=' -f2)
-    if curl -s "http://localhost:${web3signer_port}/upcheck" >/dev/null 2>&1; then
+    if curl -s "http://localhost:7500/upcheck" >/dev/null 2>&1; then
         echo -e "${GREEN}✓ Web3signer updated successfully to ${new_version}${NC}"
         echo -e "${UI_MUTED}Check logs to verify Web3signer is running correctly:${NC}"
         echo -e "${UI_MUTED}Run: cd ~/web3signer && docker compose logs web3signer${NC}"
@@ -1562,6 +1231,134 @@ remove_teku_validator() {
     press_enter
 }
 
+# Safety check: Detect if another validator is already running
+check_validator_conflict() {
+    local new_validator="$1"
+    
+    # Check for running validator containers
+    local running_validators=()
+    
+    if docker ps --format "{{.Names}}" | grep -q "^vero$" && [[ "$new_validator" != "vero" ]]; then
+        running_validators+=("vero")
+    fi
+    
+    if docker ps --format "{{.Names}}" | grep -q "^teku-validator$" && [[ "$new_validator" != "teku-validator" ]]; then
+        running_validators+=("teku-validator")
+    fi
+    
+    if [[ ${#running_validators[@]} -gt 0 ]]; then
+        echo "CRITICAL SAFETY ERROR: Another validator is already running: ${running_validators[*]}"
+        echo "Running multiple validators simultaneously will result in SLASHING and LOSS of staked ETH!"
+        echo "Stop the running validator before installing $new_validator"
+        return 1
+    fi
+    
+    # Check for existing installations (directories)
+    local existing_installations=()
+    
+    if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" && "$new_validator" != "vero" ]]; then
+        existing_installations+=("vero")
+    fi
+    
+    if [[ -d "$HOME/teku-validator" && -f "$HOME/teku-validator/.env" && "$new_validator" != "teku-validator" ]]; then
+        existing_installations+=("teku-validator")
+    fi
+    
+    if [[ ${#existing_installations[@]} -gt 0 ]]; then
+        echo "WARNING: Another validator is already installed: ${existing_installations[*]}"
+        echo "Only one validator should be used at a time to prevent slashing risk"
+        echo "Remove the existing validator before installing $new_validator"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Core Vero installation function for ULCS integration (no UI)
+install_vero_core() {
+    local service_dir="$1"
+    local params="$2"
+    
+    
+    # CRITICAL SAFETY CHECK: Prevent multiple validators
+    if ! check_validator_conflict "vero"; then
+        echo "ERROR: Cannot install Vero - validator conflict detected"
+        return 1
+    fi
+    
+    # Parse parameters (passed as JSON or simple format from ULCS)
+    local network="hoodi"  # Default network
+    local fee_recipient="0x0000000000000000000000000000000000000000"  # Default fee recipient
+    local graffiti="vero"  # Default graffiti
+    local selected_ethnodes=("ethnode1")  # Default to ethnode1
+    
+    # TODO: Parse actual parameters from ULCS when we implement parameter passing
+    
+    # Get network from Web3signer (same logic as working function)
+    if [[ -f "$HOME/web3signer/.env" ]]; then
+        network=$(grep "ETH2_NETWORK=" "$HOME/web3signer/.env" | cut -d'=' -f2)
+    fi
+    
+    
+    # Build beacon URLs by detecting beacon clients
+    local beacon_urls=""
+    local web3signer_port="7500"
+    for ethnode in "${selected_ethnodes[@]}"; do
+        local ethnode_net="${ethnode}-net"
+        
+        # Build beacon URL (using direct ethnode service name for new installations)
+        if [[ -n "$beacon_urls" ]]; then
+            beacon_urls="${beacon_urls},http://${ethnode}:5052"
+        else
+            beacon_urls="http://${ethnode}:5052"
+        fi
+    done
+    
+    # Generate configuration using centralized templates
+    local node_uid=$(id -u)
+    local node_gid=$(id -g)
+    generate_vero_env "$service_dir" "$node_uid" "$node_gid" "$network" "$beacon_urls" "$web3signer_port" "$fee_recipient" "$graffiti"
+    generate_vero_compose "$service_dir" "${selected_ethnodes[@]}"
+    
+    return 0
+}
+
+# Core Teku validator installation function for ULCS integration (no UI)
+install_teku_validator_core() {
+    local service_dir="$1"
+    local params="$2"
+    
+    
+    # CRITICAL SAFETY CHECK: Prevent multiple validators
+    if ! check_validator_conflict "teku-validator"; then
+        echo "ERROR: Cannot install Teku validator - validator conflict detected"
+        return 1
+    fi
+    
+    # Parse parameters (default values for now)
+    local network="hoodi"
+    local fee_recipient="0x0000000000000000000000000000000000000000"
+    local graffiti="teku-validator"
+    local selected_ethnode="ethnode1"
+    local selected_beacon_url="http://ethnode1-teku:5052"
+    
+    # Get current user UID/GID
+    local current_uid=$(id -u)
+    local current_gid=$(id -g)
+    
+    # Web3signer uses hardcoded port 7500 (singleton service)
+    local web3signer_port="7500"
+    
+    # Generate templates using centralized functions
+    generate_teku_validator_env "$service_dir" "$current_uid" "$current_gid" "$network" "$selected_beacon_url" "$web3signer_port" "$fee_recipient" "$graffiti" "$selected_ethnode"
+    generate_teku_validator_compose "$service_dir" "$selected_ethnode"
+
+    # Create data directory
+    mkdir -p "$service_dir/data"
+    
+    return 0
+}
+
 # Remove Web3signer installation (with extra confirmation and key deletion)
 remove_web3signer() {
     local service_dir="$HOME/web3signer"
@@ -1575,7 +1372,17 @@ remove_web3signer() {
     echo -e "${UI_MUTED}• This action is IRREVERSIBLE${NC}"
     echo -e "${UI_MUTED}• You will lose access to all your validators${NC}"
     echo
-    echo -e "${YELLOW}Only proceed if you have backed up your keys elsewhere!${NC}"
+    echo -e "${RED}🔒 MAINNET SECURITY WARNING:${NC}"
+    echo -e "${YELLOW}• File deletion does NOT guarantee complete key removal${NC}"
+    echo -e "${YELLOW}• Keys may remain in filesystem slack space, swap files, or memory dumps${NC}"
+    echo -e "${YELLOW}• For maximum security on mainnet: physically destroy the SSD/drive${NC}"
+    echo -e "${YELLOW}• Consider this machine permanently compromised for high-value keys${NC}"
+    echo
+    echo -e "${CYAN}For testnet: software deletion is sufficient${NC}"
+    echo -e "${CYAN}For mainnet: physical drive destruction is recommended${NC}"
+    echo
+    echo -e "${YELLOW}Only proceed if you have the original mnemonic/seed phrase to regenerate these keys if necessary${NC}"
+    echo -e "${YELLOW}AND you understand that for mainnet you should physically destroy this SSD afterward${NC}"
     echo
     
     if [[ ! -d "$service_dir" ]]; then
@@ -1695,7 +1502,7 @@ remove_web3signer() {
     press_enter
 }
 
-# Select beacon node for Teku validator using fancy menu
+# Select beacon node for Teku validator using fancy menu with connectivity testing
 select_beacon_node_for_teku() {
     # Ensure UI functions are available
     [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
@@ -1706,16 +1513,17 @@ select_beacon_node_for_teku() {
     local available_beacon_nodes=()
     local beacon_node_descriptions=()
     
+    echo -e "${UI_MUTED}Testing beacon node connectivity...${NC}" >&2
+    
     for dir in "$HOME"/ethnode*; do
         if [[ -d "$dir" && -f "$dir/.env" ]]; then
             local node_name=$(basename "$dir")
             
             # Check if it has a consensus client
             if (cd "$dir" && docker compose config --services 2>/dev/null | grep -q "consensus"); then
-                # Detect consensus client type - all use standard port 5052 internally
+                # Detect consensus client type
                 local compose_file=$(grep "COMPOSE_FILE=" "$dir/.env" | cut -d'=' -f2)
                 local beacon_client="lodestar"  # default
-                local beacon_port="5052"  # All consensus clients use port 5052 for internal communication
                 local client_display=""
                 
                 if [[ "$compose_file" == *"grandine"* ]]; then
@@ -1732,27 +1540,70 @@ select_beacon_node_for_teku() {
                     client_display="Lodestar"
                 fi
                 
-                local beacon_url="http://$node_name-$beacon_client:$beacon_port"
+                # Check if beacon client container is actually running
+                local container_name="${node_name}-${beacon_client}"
+                local beacon_url="http://$container_name:5052"
+                local status_indicator=""
+                local status_text=""
+                
+                if ! docker ps --format "{{.Names}}" | grep -q "^${container_name}$"; then
+                    status_indicator="✗"
+                    status_text="not running"
+                    echo -e "${UI_MUTED}  ${node_name} (${client_display}): container not running${NC}" >&2
+                else
+                    # Check if currently reachable from validator
+                    local reachable=false
+                    if [[ -d "$HOME/teku-validator" ]]; then
+                        local validator_networks=""
+                        if docker ps --format "{{.Names}}" | grep -q "^teku-validator$"; then
+                            validator_networks=$(docker inspect teku-validator --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}' 2>/dev/null || echo "")
+                        fi
+                        
+                        local ethnode_net="${node_name}-net"
+                        if echo "$validator_networks" | grep -q "$ethnode_net"; then
+                            if timeout 3 docker exec teku-validator curl -s --connect-timeout 2 \
+                               "${beacon_url}/eth/v1/node/health" >/dev/null 2>&1; then
+                                reachable=true
+                            fi
+                        fi
+                    fi
+                    
+                    if [[ "$reachable" == "true" ]]; then
+                        status_indicator="✓"
+                        status_text="reachable"
+                        echo -e "${UI_MUTED}  ${node_name} (${client_display}): ✓ reachable${NC}" >&2
+                    else
+                        status_indicator="○"
+                        status_text="available"
+                        echo -e "${UI_MUTED}  ${node_name} (${client_display}): ○ available${NC}" >&2
+                    fi
+                fi
+                
+                # Add ALL running beacon nodes to the list, regardless of current reachability
                 available_beacon_nodes+=("$beacon_url")
                 
-                # Mark current selection
+                # Create description with status and current selection indicator
                 if [[ "$beacon_url" == "$current_url" ]]; then
-                    beacon_node_descriptions+=("$node_name ($client_display - port $beacon_port) [CURRENT]")
+                    beacon_node_descriptions+=("$node_name ($client_display) [CURRENT] $status_indicator $status_text")
                 else
-                    beacon_node_descriptions+=("$node_name ($client_display - port $beacon_port)")
+                    beacon_node_descriptions+=("$node_name ($client_display) $status_indicator $status_text")
                 fi
             fi
         fi
     done
     
     if [[ ${#available_beacon_nodes[@]} -eq 0 ]]; then
-        echo -e "${RED}No consensus clients found!${NC}"
-        echo -e "${UI_MUTED}Please install at least one ethnode with a consensus client first.${NC}"
+        echo
+        echo -e "${RED}No beacon nodes found!${NC}"
+        echo -e "${UI_MUTED}No ethnode consensus clients are currently running.${NC}"
+        echo -e "${UI_MUTED}Please start at least one ethnode with a consensus client first.${NC}"
         return 1
     fi
     
-    if [[ ${#available_beacon_nodes[@]} -eq 1 ]]; then
-        echo -e "${GREEN}Only one beacon node available: ${beacon_node_descriptions[0]}${NC}"
+    # For "change beacon node" mode, always show menu even with one option
+    # For initial setup, auto-select if only one available
+    if [[ ${#available_beacon_nodes[@]} -eq 1 && -z "$current_url" ]]; then
+        echo -e "${GREEN}Only one beacon node available: ${beacon_node_descriptions[0]}${NC}" >&2
         echo "${available_beacon_nodes[0]}"
         return 0
     fi
@@ -1801,10 +1652,55 @@ select_beacon_node_for_teku() {
 
 # Install Teku validator (singleton only) - Full Implementation
 install_teku_validator() {
-    local service_dir="$HOME/teku-validator"
+    # CRITICAL SAFETY CHECK: Prevent multiple validators
+    if ! check_validator_conflict "teku-validator"; then
+        echo "ERROR: Cannot install Teku validator - validator conflict detected"
+        return 1
+    fi
     
-    # Singleton check
-    if [[ -d "$service_dir" ]]; then
+    local service_dir="$HOME/teku-validator"
+    local staging_dir="$HOME/.teku-validator-install-$$"
+    local installation_success=false
+    
+    # Atomic cleanup function
+    cleanup_failed_teku_installation() {
+        local exit_code=$?
+        set +e  # Disable error exit for cleanup
+        
+        # Prevent double cleanup
+        if [[ "${installation_success:-false}" == "true" ]]; then
+            return 0
+        fi
+        
+        echo -e "${RED}✗${NC} Teku validator installation failed"
+        echo "Performing complete cleanup..."
+        
+        # Stop and remove any Docker resources that were created
+        if [[ -f "$staging_dir/compose.yml" ]]; then
+            cd "$staging_dir" && docker compose down -v --remove-orphans 2>&1 | sed 's/^/  /' || true
+        fi
+        
+        # Remove staging directory
+        if [[ -d "$staging_dir" ]]; then
+            echo "Removing staging directory..."
+            rm -rf "$staging_dir"
+        fi
+        
+        # Remove final directory if it was partially created
+        if [[ -d "$service_dir" ]]; then
+            echo "Removing partially created installation..."
+            rm -rf "$service_dir"
+        fi
+        
+        echo "Cleanup completed"
+        exit $exit_code
+    }
+    
+    # Set error trap for atomic cleanup
+    trap cleanup_failed_teku_installation ERR INT TERM
+    
+    # Singleton check - look for actual Teku files
+    if [[ -d "$service_dir" ]] && [[ -f "$service_dir/docker-compose.yml" || -f "$service_dir/.env" ]]; then
         echo -e "${YELLOW}Teku validator is already installed${NC}"
         echo -e "${UI_MUTED}Only one Teku validator instance is supported${NC}"
         echo -e "${UI_MUTED}Location: ${service_dir}${NC}"
@@ -1875,140 +1771,49 @@ install_teku_validator() {
         "teku-validator" \
         "")
     
-    # Create directory structure
+    # Create staging directory structure  
     echo -e "${UI_MUTED}Creating directory structure...${NC}"
-    mkdir -p "$service_dir/data"
+    mkdir -p "$staging_dir/data"
     
     # Get current user UID/GID
     local current_uid=$(id -u)
     local current_gid=$(id -g)
     
-    # Create .env file
+    # Web3signer uses hardcoded port 7500 (singleton service)
+    local web3signer_port="7500"
+    
+    # Create .env file in staging
     echo -e "${UI_MUTED}Creating configuration files...${NC}"
-    cat > "$service_dir/.env" <<EOF
-#=============================================================================
-# TEKU VALIDATOR CONFIGURATION
-#=============================================================================
-# Stack identification
-TEKU_NETWORK=teku-validator
-
-# User mapping - current user
-TEKU_UID=${current_uid}
-TEKU_GID=${current_gid}
-
-# Network binding for metrics port
-HOST_BIND_IP=127.0.0.1
-
-# Ethereum network
-ETH2_NETWORK=hoodi
-
-#=============================================================================
-# CONNECTION CONFIGURATION
-#=============================================================================
-# Beacon node connection
-BEACON_NODE_URL=${selected_beacon_url}
-
-# Web3signer connection
-WEB3SIGNER_URL=http://web3signer:9000
-
-#=============================================================================
-# VALIDATOR CONFIGURATION
-#=============================================================================
-# Fee recipient address
-FEE_RECIPIENT=${fee_recipient}
-
-# Graffiti message
-GRAFFITI=${graffiti}
-
-# MEV-Boost configuration (optional)
-MEV_BOOST=http://mevboost:18550
-
-#=============================================================================
-# SERVICE CONFIGURATION
-#=============================================================================
-# Teku version
-TEKU_VERSION=25.9.2
-
-# Metrics port
-TEKU_METRICS_PORT=8008
-
-# Log level
-LOG_LEVEL=INFO
-
-# Java heap size
-TEKU_HEAP=-Xmx4g
-
-#=============================================================================
-# COMPOSE FILE SELECTION
-#=============================================================================
-COMPOSE_FILE=compose.yml
-EOF
     
-    # Create compose.yml file
-    cat > "$service_dir/compose.yml" <<EOF
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  teku-validator:
-    image: consensys/teku:\${TEKU_VERSION}
-    container_name: teku-validator
-    restart: unless-stopped
-    user: "\${TEKU_UID}:\${TEKU_GID}"
-    stop_grace_period: 30s
-    environment:
-      - JAVA_OPTS=\${TEKU_HEAP}
-    ports:
-      - "\${HOST_BIND_IP}:\${TEKU_METRICS_PORT}:8008"
-    volumes:
-      - ./data:/var/lib/teku
-      - /etc/localtime:/etc/localtime:ro
-    networks:
-      - validator-net
-      - web3signer-net
-      - ${selected_ethnode}-net
-    <<: *logging
-    command:
-      - validator-client
-      - --network=\${ETH2_NETWORK}
-      - --data-path=/var/lib/teku
-      - --beacon-node-api-endpoint=\${BEACON_NODE_URL}
-      - --validators-external-signer-url=\${WEB3SIGNER_URL}
-      - --validators-external-signer-public-keys=external-signer
-      - --validators-proposer-default-fee-recipient=\${FEE_RECIPIENT}
-      - --validators-graffiti=\${GRAFFITI}
-      - --logging=\${LOG_LEVEL}
-      - --log-destination=CONSOLE
-      - --metrics-enabled=true
-      - --metrics-port=8008
-      - --metrics-interface=0.0.0.0
-      - --metrics-host-allowlist=*
-      - --doppelganger-detection-enabled=true
-      - --shut-down-when-validator-slashed-enabled=true
-
-networks:
-  validator-net:
-    external: true
-    name: validator-net
-  web3signer-net:
-    external: true
-    name: web3signer-net
-  ${selected_ethnode}-net:
-    external: true
-    name: ${selected_ethnode}-net
-EOF
+    # Use centralized template for consistency
+    generate_teku_validator_env "$staging_dir" "$current_uid" "$current_gid" "hoodi" "$selected_beacon_url" "$web3signer_port" "$fee_recipient" "$graffiti" "$selected_ethnode"
+    generate_teku_validator_compose "$staging_dir" "$selected_ethnode"
     
-    # Set proper permissions
-    chmod 755 "$service_dir"
-    chmod 755 "$service_dir/data"
+    # Set proper permissions on staging
+    chmod 755 "$staging_dir"
+    chmod 755 "$staging_dir/data"
+    
+    # ATOMIC MOVE: Configuration complete, now commit the installation
+    echo -e "${UI_MUTED}Finalizing installation...${NC}"
+    
+    # This is the atomic operation - either it all succeeds or fails
+    mv "$staging_dir" "$service_dir"
     
     echo -e "${GREEN}✓ Teku validator installed successfully${NC}"
     echo
+    
+    # Mark installation as successful immediately after atomic move
+    # This prevents cleanup if user cancels startup
+    installation_success=true
+    
+    # Disable error traps - installation completed successfully
+    set +eE
+    set +o pipefail
+    trap - ERR INT TERM
+    
+    # Defensive cleanup: Remove staging directory if it somehow still exists
+    # (it shouldn't after mv, but this ensures complete cleanup)
+    [[ -d "$staging_dir" ]] && rm -rf "$staging_dir" 2>/dev/null || true
     
     # Ask user if they want to start the validator now
     local launch_choice=""
@@ -2019,6 +1824,11 @@ EOF
     
     if [[ "$launch_choice" == "y" || "$launch_choice" == "" ]]; then
         echo -e "${UI_MUTED}Starting Teku validator...${NC}"
+        
+        # Ensure validator-net network exists
+        if ! docker network inspect validator-net >/dev/null 2>&1; then
+            docker network create validator-net >/dev/null 2>&1
+        fi
         
         # Start Teku (safety warning handled by manage_service)
         if manage_service "up" "teku-validator"; then

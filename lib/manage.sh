@@ -100,11 +100,26 @@ check_prerequisites() {
             fi
 
             if [[ "$install_docker" == true ]]; then
-                echo -e "${UI_MUTED}Installing Docker with Compose v2 (this may take a few minutes)...${NC}"
-                sudo apt remove -y docker docker-engine docker.io containerd runc docker compose 2>/dev/null || true
-                curl -fsSL https://get.docker.com | sudo sh
+                echo -e "${UI_MUTED}Setting up Docker with Compose v2...${NC}"
+                
+                # Check if Ubuntu's docker.io package is installed
+                if apt list --installed 2>/dev/null | grep -q "docker.io/"; then
+                    echo -e "${UI_MUTED}Detected Ubuntu Docker package, adding Compose v2...${NC}"
+                    sudo apt install -y docker-compose-plugin
+                    echo -e "${GREEN}✓ Enhanced Ubuntu Docker with Compose v2${NC}"
+                elif command -v docker >/dev/null; then
+                    echo -e "${UI_MUTED}Detected existing Docker installation, adding Compose v2...${NC}"
+                    sudo apt install -y docker-compose-plugin
+                    echo -e "${GREEN}✓ Added Compose v2 to existing Docker${NC}"
+                else
+                    echo -e "${UI_MUTED}Installing official Docker + Compose v2 (this may take a few minutes)...${NC}"
+                    curl -fsSL https://get.docker.com | sudo sh
+                    sudo apt install -y docker-compose-plugin
+                    echo -e "${GREEN}✓ Installed official Docker + Compose v2${NC}"
+                fi
+                
+                # Ensure user is in docker group (safe to run multiple times)
                 sudo usermod -aG docker $USER
-                sudo apt install -y docker compose-plugin
                 echo -e "${YELLOW}⚠ Important: You'll need to log out and back in for Docker permissions to take effect.${NC}"
                 echo -e "${UI_MUTED}Or run: newgrp docker${NC}"
             fi
@@ -118,7 +133,8 @@ check_prerequisites() {
             echo -e "${RED}[ERROR]${NC} Cannot proceed without required tools."
             echo -e "${UI_MUTED}To install manually, run:${NC}"
             echo -e "${UI_MUTED}  sudo apt update && sudo apt install -y ${missing_tools[*]}${NC}"
-            [[ "$install_docker" == true ]] && echo -e "${UI_MUTED}  curl -fsSL https://get.docker.com | sudo sh && sudo apt install -y docker compose-plugin${NC}"
+            [[ "$install_docker" == true ]] && echo -e "${UI_MUTED}  sudo apt install -y docker-compose-plugin  # if you have docker.io${NC}"
+            [[ "$install_docker" == true ]] && echo -e "${UI_MUTED}  curl -fsSL https://get.docker.com | sudo sh && sudo apt install -y docker-compose-plugin  # for new install${NC}"
             return 1
         fi
     else
@@ -162,7 +178,12 @@ remove_node() {
     # Stop and remove containers using docker compose down
     if [[ -f "$node_dir/compose.yml" ]]; then
         echo -e "${UI_MUTED}  Stopping containers...${NC}" >&2
-        cd "$node_dir" && docker compose down 2>/dev/null || safe_docker_stop "$node_name"
+        # Force immediate kill for menu removal (no graceful wait)
+        cd "$node_dir" && { 
+            local containers=$(docker compose ps -q 2>/dev/null)
+            [[ -n "$containers" ]] && echo "$containers" | xargs -r docker kill 2>/dev/null || true
+            docker compose down -v 2>/dev/null || true
+        }
     fi
 
     # Remove any remaining containers
@@ -287,6 +308,9 @@ remove_nodes_menu() {
             fi
             
             force_refresh_dashboard
+            
+            # Set flag to return to main menu after ULCS operation
+            RETURN_TO_MAIN_MENU=true
         else
             echo -e "${GREEN}Removal cancelled${NC}"
         fi
@@ -306,9 +330,12 @@ remove_ethnode_universal() {
     
     echo -e "${UI_MUTED}Starting ethnode removal via Universal Service Lifecycle System...${NC}"
     
+    # Set NODEBOI_LIB if not already set
+    local NODEBOI_LIB="${NODEBOI_LIB:-$(dirname "${BASH_SOURCE[0]}")}"
+    
     # Call Universal Service Lifecycle System for removal
-    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+    if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+        source "${NODEBOI_LIB}/ulcs.sh"
         init_service_flows
         
         echo -e "${UI_MUTED}Removing via ULCS...${NC}"
@@ -399,14 +426,14 @@ fi
 local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' \
-    --max-time 2 2>/dev/null)
+    --max-time 0.5 2>/dev/null)
 
         if [[ -n "$sync_response" ]] && echo "$sync_response" | grep -q '"result"'; then
             # Get actual running version
             local version_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 -H "Content-Type: application/json" \
                 -d '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
-                --max-time 2 2>/dev/null)
+                --max-time 0.5 2>/dev/null)
             if [[ -n "$version_response" ]] && echo "$version_response" | grep -q '"result"'; then
                 local client_version=$(echo "$version_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
                 if [[ -n "$client_version" ]]; then
@@ -419,7 +446,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
             local peer_count_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 -H "Content-Type: application/json" \
                 -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
-                --max-time 2 2>/dev/null)
+                --max-time 0.5 2>/dev/null)
             local peer_count="0"
             if [[ -n "$peer_count_response" ]] && echo "$peer_count_response" | grep -q '"result"'; then
                 peer_count=$(echo "$peer_count_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
@@ -436,7 +463,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                 local block_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                     -H "Content-Type: application/json" \
                     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-                    --max-time 2 2>/dev/null)
+                    --max-time 0.5 2>/dev/null)
 
                 if echo "$block_response" | grep -q '"result":"0x0"'; then
                     el_check="${GREEN}✓${NC}"
@@ -450,7 +477,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                     local latest_block_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
                         -H "Content-Type: application/json" \
                         -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}' \
-                        --max-time 2 2>/dev/null)
+                        --max-time 0.5 2>/dev/null)
                     
                     if [[ -n "$latest_block_response" ]] && echo "$latest_block_response" | grep -q '"timestamp"'; then
                         local block_timestamp_hex=$(echo "$latest_block_response" | grep -o '"timestamp":"[^"]*"' | cut -d'"' -f4)
@@ -485,18 +512,18 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         elif curl -s -X POST "http://${check_host}:${el_rpc}" \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
-            --max-time 2 2>/dev/null | grep -q '"result"'; then
+            --max-time 0.5 2>/dev/null | grep -q '"result"'; then
             el_check="${GREEN}✓${NC}"
             el_sync_status=" (Starting)"
         fi
 
         # Check consensus client health and sync
-        local cl_sync_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/syncing" --max-time 2 2>/dev/null)
-        local cl_health_code=$(curl -s -w "%{http_code}" -o /dev/null "http://${check_host}:${cl_rest}/eth/v1/node/health" --max-time 2 2>/dev/null)
+        local cl_sync_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/syncing" --max-time 0.5 2>/dev/null)
+        local cl_health_code=$(curl -s -w "%{http_code}" -o /dev/null "http://${check_host}:${cl_rest}/eth/v1/node/health" --max-time 0.5 2>/dev/null)
 
         if [[ -n "$cl_sync_response" ]]; then
             # Get actual running version
-            local cl_version_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null)
+            local cl_version_response=$(curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 0.5 2>/dev/null)
             if [[ -n "$cl_version_response" ]] && echo "$cl_version_response" | grep -q '"data"'; then
                 local client_version=$(echo "$cl_version_response" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
                 if [[ -n "$client_version" ]]; then
@@ -527,7 +554,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
             # Health endpoint shows syncing (206) even if syncing endpoint failed
             cl_check="${GREEN}✓${NC}"
             cl_sync_status=" (Syncing)"
-        elif curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 2 2>/dev/null | grep -q '"data"'; then
+        elif curl -s "http://${check_host}:${cl_rest}/eth/v1/node/version" --max-time 0.5 2>/dev/null | grep -q '"data"'; then
             cl_check="${GREEN}✓${NC}"
             cl_sync_status=" (Starting)"
         fi
@@ -536,7 +563,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         local mevboost_port=$(grep "MEVBOOST_PORT=" "$node_dir/.env" | cut -d'=' -f2)
         local mevboost_response=""
         if [[ -n "$mevboost_port" ]]; then
-            mevboost_response=$(curl -s "http://${check_host}:${mevboost_port}/eth/v1/builder/status" --max-time 2 2>/dev/null)
+            mevboost_response=$(curl -s "http://${check_host}:${mevboost_port}/eth/v1/builder/status" --max-time 0.5 2>/dev/null)
         fi
         if [[ -n "$mevboost_response" ]]; then
             mevboost_check="${GREEN}✓${NC}"
@@ -571,7 +598,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         endpoint_host="$host_ip"
         exec_container_host="$endpoint_host"
         cons_container_host="$endpoint_host"
-        access_indicator=" ${YELLOW}[L]${NC}"  # Local network
+        access_indicator=" ${UI_WARNING}[L]${UI_RESET}"  # Local network
     fi
 
     # Check for updates - now after we have real versions from APIs
@@ -599,22 +626,22 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         echo -e "  ${GREEN}●${NC} $node_name ($network)$access_indicator"
 
         # Execution client line
-        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
+        printf "     %b %-25s (%s)%b\t     http://%s:%s\n" \
             "$el_check" "${exec_client}${el_sync_status}" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator" "$exec_container_host" "$el_rpc"
 
         # Consensus client line
-        printf "     %b %-20s (%s)%b\t     http://%s:%s\n" \
+        printf "     %b %-25s (%s)%b\t     http://%s:%s\n" \
             "$cl_check" "${cons_client}${cl_sync_status}" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator" "$cons_container_host" "$cl_rest"
 
         # MEV-boost line (only show if it's running)
         if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]]; then
-            printf "     %b %-20s (%s)%b\n" \
+            printf "     %b %-25s (%s)%b\n" \
                 "$mevboost_check" "MEV-boost" "$(display_version "mevboost" "$mevboost_version")" "$mevboost_update_indicator"
         fi
     else
         echo -e "  ${RED}●${NC} $node_name ($network) - ${RED}Stopped${NC}"
-        printf "     %-20s (%s)%b\n" "$exec_client" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator"
-        printf "     %-20s (%s)%b\n" "$cons_client" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator"
+        printf "     %-25s (%s)%b\n" "$exec_client" "$(display_version "$exec_client" "$exec_version")" "$exec_update_indicator"
+        printf "     %-25s (%s)%b\n" "$cons_client" "$(display_version "$cons_client" "$cons_version")" "$cons_update_indicator"
     fi
 
     echo
@@ -626,7 +653,7 @@ check_web3signer_health() {
     local service_name=$(basename "$service_dir")
     
     # Get configuration
-    local port=$(grep "WEB3SIGNER_PORT=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+    local port="7500"  # Web3signer always uses hardcoded port 7500
     local network=$(grep "ETH2_NETWORK=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     local version=$(grep "WEB3SIGNER_VERSION=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     local host_ip=$(grep "HOST_BIND_IP=" "$service_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
@@ -690,7 +717,7 @@ check_web3signer_health() {
     
     if [[ "$containers_running" == true ]]; then
         echo -e "  $status_indicator web3signer ($network) ${access_indicator}"
-        printf "     %b %-20s (%s)%b\n" "$w3s_check" "web3signer" "$(display_version "web3signer" "$version")" "$w3s_update_indicator"
+        printf "     %b %-25s (%s)%b\n" "$w3s_check" "web3signer" "$(display_version "web3signer" "$version")" "$w3s_update_indicator"
         printf "     %s %-20s\n" "" "$keystore_count active keys"
     else
         echo -e "  ${status_indicator} web3signer (${network}) ${access_indicator}"
@@ -785,7 +812,7 @@ print(result)
             attestation_status="attesting"
             attestation_indicator="${GREEN}✓${NC}"
         fi
-        printf "     ${attestation_indicator} %-20s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
+        printf "     ${attestation_indicator} %-25s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
         printf "     %s %-20s\n" "" "Connected to:"
         
         # Handle case where no beacon nodes are configured
@@ -895,29 +922,52 @@ check_teku_validator_health() {
     
     if [[ "$containers_running" == true ]]; then
         echo -e "  $status_indicator teku-validator ($network) $access_indicator"
-        # Check beacon node connectivity first to determine validator status
+        # Check beacon node connectivity and sync status to determine validator status
         local reachable_count=0
+        local synced_count=0
+        local syncing_count=0
         local beacon_url_list=""
         
         # Parse beacon URLs if configured
         if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
             beacon_url_list=$(echo "$beacon_urls" | tr ',' ' ')
             for url in $beacon_url_list; do
-                # Extract the container name from the URL (e.g., ethnode1-grandine:5052 from http://ethnode1-grandine:5052)
+                # Extract the container name and port from the URL
                 local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:.*||g')
+                local port=$(echo "$url" | sed 's|.*:||g')
                 
                 # Check if container is running
                 if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
                     ((reachable_count++))
+                    
+                    # Map internal container port to external host port
+                    local host_port=$(docker port "$container_name" "$port/tcp" 2>/dev/null | cut -d':' -f2)
+                    if [[ -z "$host_port" ]]; then
+                        # Fallback: try the internal port directly (for localhost-bound services)
+                        host_port="$port"
+                    fi
+                    
+                    # Check beacon node sync status
+                    local sync_status=$(curl -s --max-time 0.5 "http://localhost:${host_port}/eth/v1/node/syncing" 2>/dev/null | jq -r '.data.is_syncing // "unknown"' 2>/dev/null)
+                    if [[ "$sync_status" == "false" ]]; then
+                        ((synced_count++))
+                    elif [[ "$sync_status" == "true" ]]; then
+                        ((syncing_count++))
+                    fi
                 fi
             done
         fi
         
-        # Check attestation status from Teku validator logs and metrics (more reliable)
+        # Check validator status with comprehensive beacon node dependency checking
         local validator_status="not attesting"
         local validator_indicator="${RED}✗${NC}"
         
-        # Check recent logs for published attestations (primary method)
+        # Check for doppelganger detection first
+        local doppelganger_active=$(docker logs teku-validator --tail=10 --since=3m 2>/dev/null | grep -c "Performing doppelganger check" || echo "0")
+        local doppelganger_errors=$(docker logs teku-validator --tail=10 --since=3m 2>/dev/null | grep -c "Unable to check validators doppelgangers" || echo "0")
+        local liveness_not_enabled=$(docker logs teku-validator --tail=20 --since=5m 2>/dev/null | grep -c "liveness tracking not enabled" || echo "0")
+        
+        # Check recent logs for published attestations
         local recent_attestation_logs=$(docker logs teku-validator --tail=20 --since=5m 2>/dev/null | grep -c "Published attestation" || echo "0")
         
         # Also check metrics as backup if available
@@ -927,13 +977,19 @@ check_teku_validator_health() {
             metrics_check=$(curl -s "http://localhost:${metrics_port}/metrics" 2>/dev/null | grep -c "publish_attestation.*success" || echo "0")
         fi
         
-        # Only mark as attesting if actually publishing attestations
+        # Determine status
         if [[ "$recent_attestation_logs" -gt 0 ]] || [[ "$metrics_check" -gt 0 ]]; then
             validator_status="attesting"
             validator_indicator="${GREEN}✓${NC}"
+        elif [[ "$doppelganger_active" -gt 0 ]] || [[ "$doppelganger_errors" -gt 0 ]] || [[ "$liveness_not_enabled" -gt 0 ]]; then
+            validator_status="not attesting"
+            validator_indicator="${RED}✗${NC}"
+        else
+            validator_status="not attesting"
+            validator_indicator="${RED}✗${NC}"
         fi
         
-        printf "     ${validator_indicator} %-20s (%s)\n" "$validator_status" "$(display_version "teku-validator" "$version")"
+        printf "     ${validator_indicator} %-25s (%s)\n" "$validator_status" "$(display_version "teku-validator" "$version")"
         
         # Show beacon node connection if configured
         if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
@@ -959,20 +1015,42 @@ check_teku_validator_health() {
                 # Debug: skip empty URLs
                 [[ -z "$display_name" || -z "$container_name" ]] && continue
                 
-                # Check if container is running
-                local is_healthy=false
-                if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
-                    is_healthy=true
-                fi
+                # Check container status and beacon node health
+                local container_status=""
+                local beacon_health=""
                 
-                if [[ "$is_healthy" == "true" ]]; then
-                    printf "     ${GREEN}✓${NC} %s\n" "$display_name"
+                if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+                    # Container is running, check if beacon API is responsive
+                    local api_check=$(curl -s --max-time 0.5 "http://localhost:${port}/eth/v1/node/health" 2>/dev/null)
+                    if [[ $? -eq 0 ]]; then
+                        # Check sync status
+                        local sync_status=$(curl -s --max-time 0.5 "http://localhost:${port}/eth/v1/node/syncing" 2>/dev/null | jq -r '.data.is_syncing // "unknown"' 2>/dev/null)
+                        if [[ "$sync_status" == "false" ]]; then
+                            container_status="${GREEN}✓${NC}"
+                            beacon_health="synced"
+                        elif [[ "$sync_status" == "true" ]]; then
+                            container_status="${RED}✗${NC}"
+                            beacon_health="syncing"
+                        else
+                            container_status="${GREEN}✓${NC}"
+                            beacon_health="ready"
+                        fi
+                    else
+                        container_status="${RED}✗${NC}"
+                        beacon_health="starting"
+                    fi
+                    # Show status text only when NOT attesting and NOT doing doppelganger checks
+                    if [[ "$validator_status" == "attesting" ]] || [[ "$doppelganger_active" -gt 0 ]] || [[ "$doppelganger_errors" -gt 0 ]] || [[ "$liveness_not_enabled" -gt 0 ]]; then
+                        printf "     %s %s\n" "$container_status" "$display_name"
+                    else
+                        printf "     %s %s ${UI_MUTED}(%s)${NC}\n" "$container_status" "$display_name" "$beacon_health"
+                    fi
                 else
-                    printf "     ${RED}✗${NC} %s ${UI_MUTED}(waiting)${NC}\n" "$display_name"
+                    printf "     ${RED}✗${NC} %s ${UI_MUTED}(not found)${NC}\n" "$display_name"
                 fi
             done
         else
-            printf "     ${YELLOW}⚠️  No beacon nodes configured${NC}\n"
+            printf "     ${YELLOW}[WARNING] No beacon nodes configured${NC}\n"
         fi
     else
         echo -e "  ${status_indicator} teku-validator (${network}) $access_indicator"
@@ -981,10 +1059,17 @@ check_teku_validator_health() {
     echo
 }
 
-# Stub functions for missing dependencies to prevent delays
+# Fallback functions - only used if real functions from clients.sh aren't available
 cleanup_version_cache() { return 0; }
-check_service_update() { echo ""; }
-display_version() { echo "${2:-unknown}"; }
+
+# Only define these if they don't already exist (from clients.sh)
+if ! declare -f check_service_update >/dev/null 2>&1; then
+    check_service_update() { echo ""; }
+fi
+
+if ! declare -f display_version >/dev/null 2>&1; then
+    display_version() { echo "${2:-unknown}"; }
+fi
 
 # Generate fresh dashboard with health checks
 generate_dashboard() {
@@ -999,9 +1084,9 @@ generate_dashboard() {
     
     # Monitoring functions should be pre-loaded when manage.sh is sourced
     
-    # Disable update checking for dashboard generation to improve speed
+    # Keep update checking enabled for dashboard generation
     local original_check_updates="$CHECK_UPDATES"
-    CHECK_UPDATES="false"
+    # CHECK_UPDATES="false"  # REMOVED: This was disabling all update indicators
     
     cleanup_version_cache 2>/dev/null || true 
     echo -e "${BOLD}NODEBOI Dashboard${NC}\n=================\n"
@@ -1050,8 +1135,8 @@ generate_dashboard() {
         echo -e "${UI_MUTED}  No nodes or services installed${NC}\n"
     else
         echo -e "${UI_MUTED}─────────────────────────────${NC}"
-        echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC} ${UI_MUTED}Update${NC}"
-        echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${UI_WARNING}[L]${UI_RESET} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All networks${NC}"
+        echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC}  ${UI_MUTED}Update available${NC}"
+        echo -e "${UI_MUTED}Access: ${GREEN}[M]${NC} ${UI_MUTED}My machine${NC} | ${UI_WARNING}[L]${UI_RESET} ${UI_MUTED}Local network${NC} | ${RED}[A]${NC} ${UI_MUTED}All network interfaces${NC}"
     fi
     # Restore original CHECK_UPDATES setting
     CHECK_UPDATES="$original_check_updates"
@@ -1290,8 +1375,8 @@ manage_node_state() {
             for i in "${!nodes[@]}"; do
                 if [[ "${node_status[$i]}" == "Stopped" ]]; then
                     echo -e "${UI_MUTED}Starting ${nodes[$i]} via ULCS...${NC}"
-                    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-                        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                    if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+                        source "${NODEBOI_LIB}/ulcs.sh"
                         start_service_universal "${nodes[$i]}" > /dev/null 2>&1
                     else
                         # Fallback to legacy method
@@ -1308,8 +1393,8 @@ manage_node_state() {
             for i in "${!nodes[@]}"; do
                 if [[ "${node_status[$i]}" == "Running" ]]; then
                     echo -e "${UI_MUTED}Stopping ${nodes[$i]} via ULCS...${NC}"
-                    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-                        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                    if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+                        source "${NODEBOI_LIB}/ulcs.sh"
                         stop_service_universal "${nodes[$i]}" > /dev/null 2>&1
                     else
                         # Fallback to legacy method
@@ -1342,37 +1427,33 @@ manage_node_state() {
                 case $action_selection in
                     0)
                         echo -e "\n${YELLOW}Starting $node_name via ULCS...${NC}"
-                        if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-                            source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                        if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+                            source "${NODEBOI_LIB}/ulcs.sh"
                             if start_service_universal "$node_name"; then
                                 echo -e "${GREEN}$node_name started successfully${NC}"
                             else
-                                echo -e "${RED}Failed to start $node_name via ULCS, trying legacy method...${NC}"
-                                cd "$node_dir" && docker compose up -d > /dev/null 2>&1
-                                echo -e "${GREEN}$node_name started${NC}"
+                                echo -e "${RED}Failed to start $node_name via ULCS${NC}"
+                                return 1
                             fi
                         else
-                            # Fallback to legacy method
-                            cd "$node_dir" && docker compose up -d > /dev/null 2>&1
-                            echo -e "${GREEN}$node_name started${NC}"
+                            echo -e "${RED}ULCS not available - cannot start service${NC}"
+                            return 1
                         fi
                         force_refresh_dashboard
                         ;;
                     1)
                         echo -e "\n${UI_MUTED}Stopping $node_name via ULCS...${NC}"
-                        if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-                            source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+                        if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+                            source "${NODEBOI_LIB}/ulcs.sh"
                             if stop_service_universal "$node_name"; then
                                 echo -e "${GREEN}$node_name stopped successfully${NC}"
                             else
-                                echo -e "${RED}Failed to stop $node_name via ULCS, trying legacy method...${NC}"
-                                safe_docker_stop "$node_name"
-                                echo -e "${GREEN}$node_name stopped${NC}"
+                                echo -e "${RED}Failed to stop $node_name via ULCS${NC}"
+                                return 1
                             fi
                         else
-                            # Fallback to legacy method
-                            safe_docker_stop "$node_name"
-                            echo -e "${GREEN}$node_name stopped${NC}"
+                            echo -e "${RED}ULCS not available - cannot stop service${NC}"
+                            return 1
                         fi
                         force_refresh_dashboard
                         ;;
@@ -2219,7 +2300,15 @@ cleanup_removed_ethnode_monitoring() {
     if [[ -d "$HOME/monitoring" ]] && command -v curl >/dev/null 2>&1; then
         # Check if Grafana is running
         if docker ps --format "{{.Names}}" | grep -q "monitoring-grafana"; then
-            local grafana_url="http://localhost:3000"
+            # Get Grafana URL from monitoring configuration
+            local bind_ip="localhost"
+            local grafana_port="3000"
+            if [[ -f "$HOME/monitoring/.env" ]]; then
+                bind_ip=$(grep "GRAFANA_BIND_IP=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null || echo "localhost")
+                grafana_port=$(grep "GRAFANA_PORT=" "$HOME/monitoring/.env" | cut -d'=' -f2 2>/dev/null || echo "3000")
+                [[ "$bind_ip" == "127.0.0.1" ]] && bind_ip="localhost"
+            fi
+            local grafana_url="http://${bind_ip}:${grafana_port}"
             
             # Get admin credentials
             local admin_user="admin"

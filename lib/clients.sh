@@ -186,7 +186,7 @@ get_latest_version() {
     fi
 
     # Fetch from GitHub
-    local version=$(curl -sL "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | \
+    local version=$(curl -sL --max-time 3 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | \
                    grep '"tag_name"' | head -1 | cut -d'"' -f4)
 
     if [[ -n "$version" ]]; then
@@ -196,7 +196,14 @@ get_latest_version() {
         echo "${client}:${version}:$(date +%s)" >> "$cache_file"
         echo "$version"
     else
-        # API failed - return empty and let caller handle the failure
+        # API failed - try to use any cached version as fallback (even if expired)
+        local fallback_cache=$(grep "^${client}:" "$cache_file" 2>/dev/null | tail -1)
+        if [[ -n "$fallback_cache" ]]; then
+            local fallback_version=$(echo "$fallback_cache" | cut -d: -f2)
+            echo "$fallback_version"
+            return 0
+        fi
+        # No cache available at all
         return 1
     fi
 }
@@ -256,6 +263,41 @@ prompt_execution_client() {
     fi
 }
 
+# Enhanced client selection with immediate version prompting
+prompt_execution_client_with_version() {
+    local client_options=()
+    for client in "${EXECUTION_CLIENTS[@]}"; do
+        client_options+=("${client^}")
+    done
+    client_options+=("← Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Execution Client" "${client_options[@]}"); then
+        if [[ $selection -eq ${#EXECUTION_CLIENTS[@]} ]]; then
+            # Cancel selected
+            return 1
+        fi
+        
+        local selected_client="${EXECUTION_CLIENTS[$selection]}"
+        
+        # Immediately prompt for version
+        local default_version=$(get_default_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version=$(get_latest_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version="latest"
+        
+        local selected_version
+        selected_version=$(fancy_text_input "Version for ${selected_client^}" \
+            "Enter version (e.g., v2.0.27 or 25.7.0):" \
+            "$default_version")
+        
+        if [[ -n "$selected_version" ]]; then
+            echo "${selected_client}:${selected_version}"
+        else
+            echo "${selected_client}:${default_version}"
+        fi
+    fi
+}
+
 prompt_consensus_client() {
     local client_options=()
     for client in "${CONSENSUS_CLIENTS[@]}"; do
@@ -270,6 +312,94 @@ prompt_consensus_client() {
             return 1
         fi
         echo "${CONSENSUS_CLIENTS[$selection]}"
+    fi
+}
+
+# Enhanced consensus client selection with immediate version prompting
+prompt_consensus_client_with_version() {
+    local client_options=()
+    for client in "${CONSENSUS_CLIENTS[@]}"; do
+        client_options+=("${client^}")
+    done
+    client_options+=("← Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Consensus Client" "${client_options[@]}"); then
+        if [[ $selection -eq ${#CONSENSUS_CLIENTS[@]} ]]; then
+            # Cancel selected
+            return 1
+        fi
+        
+        local selected_client="${CONSENSUS_CLIENTS[$selection]}"
+        
+        # Immediately prompt for version
+        local default_version=$(get_default_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version=$(get_latest_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version="latest"
+        
+        local selected_version
+        selected_version=$(fancy_text_input "Version for ${selected_client^}" \
+            "Enter version (e.g., v2.0.27 or 25.7.0):" \
+            "$default_version")
+        
+        if [[ -n "$selected_version" ]]; then
+            echo "${selected_client}:${selected_version}"
+        else
+            echo "${selected_client}:${default_version}"
+        fi
+    fi
+}
+
+# Enhanced MEV-boost selection with immediate version prompting
+prompt_mevboost_with_version() {
+    local default_version=$(get_default_version "mevboost" 2>/dev/null)
+    [[ -z "$default_version" ]] && default_version=$(get_latest_version "mevboost" 2>/dev/null)
+    [[ -z "$default_version" ]] && default_version="latest"
+    
+    local selected_version
+    selected_version=$(fancy_text_input "Version for MEV-boost" \
+        "Enter version (e.g., v1.7.0):" \
+        "$default_version")
+    
+    if [[ -n "$selected_version" ]]; then
+        echo "mevboost:${selected_version}"
+    else
+        echo "mevboost:${default_version}"
+    fi
+}
+
+# Enhanced validator client selection with immediate version prompting
+prompt_validator_client_with_version() {
+    local client_options=()
+    for client in "${VALIDATOR_CLIENTS[@]}"; do
+        client_options+=("${client^}")
+    done
+    client_options+=("← Cancel")
+    
+    local selection
+    if selection=$(fancy_select_menu "Select Validator Client" "${client_options[@]}"); then
+        if [[ $selection -eq ${#VALIDATOR_CLIENTS[@]} ]]; then
+            # Cancel selected
+            return 1
+        fi
+        
+        local selected_client="${VALIDATOR_CLIENTS[$selection]}"
+        
+        # Immediately prompt for version
+        local default_version=$(get_default_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version=$(get_latest_version "$selected_client" 2>/dev/null)
+        [[ -z "$default_version" ]] && default_version="latest"
+        
+        local selected_version
+        selected_version=$(fancy_text_input "Version for ${selected_client^}" \
+            "Enter version (e.g., v24.12.0 or v1.2.3):" \
+            "$default_version")
+        
+        if [[ -n "$selected_version" ]]; then
+            echo "${selected_client}:${selected_version}"
+        else
+            echo "${selected_client}:${default_version}"
+        fi
     fi
 }
 

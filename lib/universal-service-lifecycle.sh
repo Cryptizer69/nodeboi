@@ -4,7 +4,6 @@
 
 # Source dependencies
 [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
-[[ -f "${NODEBOI_LIB}/service-registry.sh" ]] && source "${NODEBOI_LIB}/service-registry.sh"
 [[ -f "${NODEBOI_LIB}/lifecycle-hooks.sh" ]] && source "${NODEBOI_LIB}/lifecycle-hooks.sh"
 [[ -f "${NODEBOI_LIB}/service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/service-lifecycle.sh"
 [[ -f "${NODEBOI_LIB}/ulcs-monitoring.sh" ]] && source "${NODEBOI_LIB}/ulcs-monitoring.sh"
@@ -481,9 +480,6 @@ execute_lifecycle_step() {
             ;;
         "health_check")
             health_check_service "$service_name"
-            ;;
-        "unregister")
-            unregister_service_from_registry "$service_name"
             ;;
         "ensure_networks")
             ensure_service_networks "$service_name" "$flow_def"

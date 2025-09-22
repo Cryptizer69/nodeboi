@@ -8,7 +8,8 @@
 
 # Load dependencies
 [[ -f "${NODEBOI_LIB}/common.sh" ]] && source "${NODEBOI_LIB}/common.sh"
-[[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]] && source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
+[[ -f "${NODEBOI_LIB}/ulcs.sh" ]] && source "${NODEBOI_LIB}/ulcs.sh"
+[[ -f "${NODEBOI_LIB}/templates.sh" ]] && source "${NODEBOI_LIB}/templates.sh"
 
 #=============================================================================
 # NETWORK DISCOVERY
@@ -215,16 +216,24 @@ rebuild_service_compose_yml() {
     # Generate service-specific compose content
     case "$service_type" in
         monitoring)
-            generate_monitoring_compose "$temp_file" "${networks[@]}"
+            generate_network_monitoring_compose "$temp_file" "${networks[@]}"
             ;;
         vero)
-            generate_vero_compose "$temp_file" "${networks[@]}"
+            # Convert networks array to ethnodes for centralized template
+            local ethnodes=()
+            for net in "${networks[@]}"; do
+                if [[ "$net" =~ ^ethnode[0-9]+-net$ ]]; then
+                    local ethnode_name="${net%-net}"
+                    ethnodes+=("$ethnode_name")
+                fi
+            done
+            generate_vero_compose "$temp_file" "${ethnodes[@]}"
             ;;
         teku-validator)
-            generate_teku_validator_compose "$temp_file" "${networks[@]}"
+            generate_network_teku_validator_compose "$temp_file" "${networks[@]}"
             ;;
         ethnode)
-            generate_ethnode_compose "$temp_file" "$service_dir" "${networks[@]}"
+            update_ethnode_compose_networks "$temp_file" "$service_dir" "${networks[@]}"
             ;;
         *)
             echo "Error: Unknown service type '$service_type'"
@@ -243,7 +252,7 @@ rebuild_service_compose_yml() {
 }
 
 # Generate monitoring compose.yml with network connections
-generate_monitoring_compose() {
+generate_network_monitoring_compose() {
     local temp_file="$1"
     shift
     local networks=("$@")
@@ -276,7 +285,7 @@ services:
     container_name: monitoring-prometheus
     hostname: prometheus
     restart: unless-stopped
-    user: "\${PROMETHEUS_UID}:\${PROMETHEUS_GID}"
+    user: "65534:65534"
     command:
       - --storage.tsdb.retention.time=30d
       - --config.file=/etc/prometheus/prometheus.yml
@@ -310,7 +319,7 @@ EOF
     container_name: monitoring-grafana
     hostname: grafana
     restart: unless-stopped
-    user: "\${GRAFANA_UID}:\${GRAFANA_GID}"
+    user: "\${NODE_UID}:\${NODE_GID}"
     networks:
       - $monitoring_net
     ports:
@@ -374,62 +383,9 @@ EOF
     fi
 }
 
-# Generate Vero compose.yml with network connections
-generate_vero_compose() {
-    local temp_file="$1"
-    shift
-    local networks=("$@")
-    
-    cat > "$temp_file" <<EOF
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  vero:
-    image: \${VERO_IMAGE}:\${VERO_VERSION}
-    container_name: vero
-    restart: unless-stopped
-    user: "\${VERO_UID}:\${VERO_GID}"
-    stop_grace_period: 30s
-    networks:
-EOF
-
-    # Add networks
-    for network in "${networks[@]}"; do
-        echo "      - $network" >> "$temp_file"
-    done
-    
-    cat >> "$temp_file" <<EOF
-    ports:
-      - "\${HOST_BIND_IP}:\${VERO_METRICS_PORT}:9010"
-    volumes:
-      - ./data:/home/vero/.vero
-      - /etc/localtime:/etc/localtime:ro
-    <<: *logging
-    command: \${VERO_COMMAND}
-    environment:
-      - BEACON_NODE_URLS=\${BEACON_NODE_URLS}
-
-networks:
-EOF
-
-    # Add network definitions
-    for network in "${networks[@]}"; do
-        cat >> "$temp_file" <<EOF
-  $network:
-    external: true
-    name: $network
-EOF
-    done
-}
 
 # Generate Teku validator compose.yml with network connections  
-generate_teku_validator_compose() {
+generate_network_teku_validator_compose() {
     local temp_file="$1"
     shift
     local networks=("$@")
@@ -499,7 +455,7 @@ EOF
 }
 
 # Generate ethnode compose.yml for isolated network (simpler case)
-generate_ethnode_compose() {
+update_ethnode_compose_networks() {
     local temp_file="$1"
     local service_dir="$2"
     shift 2
@@ -529,17 +485,15 @@ EOF
 
 # Convenience functions that match the old API for backward compatibility
 rebuild_monitoring_compose_yml_isolated() {
-    local monitoring_net="$1"
-    shift
-    local ethnode_networks=("$@")
-    # Remove validator_net from the end if it exists
-    local validator_net="${ethnode_networks[-1]}"
-    if [[ "$validator_net" == "validator-net" ]]; then
-        unset 'ethnode_networks[-1]'
-    fi
+    # Use Docker network discovery instead of passed parameters for robust network detection
+    local discovered_ethnode_networks=$(docker network ls --format "{{.Name}}" | grep "^ethnode[0-9]*-net$" | sort -V)
+    local all_networks=("monitoring-net")
     
-    local all_networks=("$monitoring_net" "${ethnode_networks[@]}")
-    [[ -n "$validator_net" ]] && all_networks+=("$validator_net")
+    # Add discovered ethnode networks
+    for network in $discovered_ethnode_networks; do
+        all_networks+=("$network")
+    done
+    all_networks+=("validator-net")
     
     rebuild_service_compose_yml "monitoring" "$HOME/monitoring" "${all_networks[@]}"
 }

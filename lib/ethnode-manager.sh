@@ -6,6 +6,7 @@
 [[ -f "${NODEBOI_LIB}/ui.sh" ]] && source "${NODEBOI_LIB}/ui.sh"
 [[ -f "${NODEBOI_LIB}/network-manager.sh" ]] && source "${NODEBOI_LIB}/network-manager.sh"
 [[ -f "${NODEBOI_LIB}/service-manager.sh" ]] && source "${NODEBOI_LIB}/service-manager.sh"
+[[ -f "${NODEBOI_LIB}/templates.sh" ]] && source "${NODEBOI_LIB}/templates.sh"
 
 INSTALL_DIR="$HOME/.nodeboi"
 
@@ -18,12 +19,11 @@ get_next_instance_number() {
             # Complete installation, try next number
             ((num++))
         else
-            # Incomplete installation found - we can reuse this number
-            # Now that we have proper cleanup traps, we can handle this more conservatively
-            echo "Found incomplete ethnode${num} installation." >&2
-            echo "You may want to clean it up manually: rm -rf ~/ethnode${num}" >&2
-            # For safety, skip this number and suggest next available
-            ((num++))
+            # Incomplete installation found - reuse this number
+            echo "Found incomplete ethnode${num} installation - will reuse this number" >&2
+            echo "Cleaning up incomplete installation directory..." >&2
+            rm -rf "$HOME/ethnode${num}"
+            break
         fi
     done
     echo $num
@@ -398,25 +398,13 @@ create_directories_in_staging() {
 # Create compose.yml file with 2-network model for atomic installation
 create_atomic_compose_file() {
     local node_dir="$1"
+    local node_name="$2"
     
     [[ -z "$node_dir" ]] && { echo "Error: Node directory is empty" >&2; return 1; }
+    [[ -z "$node_name" ]] && { echo "Error: Node name is empty" >&2; return 1; }
     
-    # Create compose.yml with proper 2-network configuration
-    cat > "$node_dir/compose.yml" <<'EOF'
-x-logging: &logging
- logging:
-   driver: json-file
-   options:
-     max-size: 100m
-     max-file: "3"
-     tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-networks:
-  default:
-    external: true
-    name: ${NODE_NAME}-net
-    enable_ipv6: ${IPV6:-false}
-EOF
+    # Create compose.yml with proper 2-network configuration using centralized template
+    generate_ethnode_base_compose "$node_dir" "$node_name"
     
     echo -e "${UI_MUTED}Created compose.yml with ${node_name}-net isolated network configuration${NC}" >&2
 }
@@ -458,27 +446,77 @@ copy_config_files() {
     local node_dir="$1"
     local exec_client="$2"
     local cons_client="$3"
-    local script_dir="$HOME/.nodeboi"
+    local node_name="$4"
+    local node_uid="$5"
+    local node_gid="$6"
+    local network="$7"
+    local mevboost_enabled="$8"
+    local el_rpc_port="$9"
+    local el_ws_port="${10}"
+    local ee_port="${11}"
+    local el_p2p_port="${12}"
+    local el_p2p_port_2="${13}"
+    local cl_rest_port="${14}"
+    local cl_p2p_port="${15}"
+    local cl_quic_port="${16}"
+    local mevboost_port="${17}"
 
-    [[ ! -d "$script_dir" ]] && { echo "Error: Configuration directory $script_dir not found" >&2; return 1; }
     [[ -z "$node_dir" ]] || [[ ! -d "$node_dir" ]] && { echo "Error: Invalid node directory" >&2; return 1; }
 
-    echo -e "${UI_MUTED}Copying configuration files from $script_dir...${NC}" >&2
+    echo -e "${UI_MUTED}Generating configuration files using centralized templates...${NC}" >&2
 
-    # Copy base files
-    cp "$script_dir/compose.yml" "$node_dir/" || { echo "Error: Failed to copy compose.yml" >&2; return 1; }
-    cp "$script_dir/default.env" "$node_dir/.env" || { echo "Error: Failed to copy default.env" >&2; return 1; }
-    cp "$script_dir/mevboost.yml" "$node_dir/" || { echo "Error: Failed to copy mevboost.yml" >&2; return 1; }
+    # Generate base compose.yml
+    generate_ethnode_compose "$node_dir" "$node_name" || { echo "Error: Failed to generate compose.yml" >&2; return 1; }
 
-    # Copy execution client configuration
-    local exec_file="${exec_client}.yml"
-    cp "$script_dir/$exec_file" "$node_dir/" || { echo "Error: Failed to copy $exec_file" >&2; return 1; }
+    # Generate .env file with dynamic ports
+    generate_ethnode_env "$node_dir" "$node_name" "$node_uid" "$node_gid" "$network" "$exec_client" "$cons_client" "$mevboost_enabled" "$el_rpc_port" "$el_ws_port" "$ee_port" "$el_p2p_port" "$el_p2p_port_2" "$cl_rest_port" "$cl_p2p_port" "$cl_quic_port" "$mevboost_port" || { echo "Error: Failed to generate .env" >&2; return 1; }
 
-    # Copy consensus client configuration
-    local cons_file="${cons_client}-cl-only.yml"
-    cp "$script_dir/$cons_file" "$node_dir/" || { echo "Error: Failed to copy $cons_file" >&2; return 1; }
+    # Generate MEV-boost configuration if enabled
+    if [[ "$mevboost_enabled" == "true" ]]; then
+        generate_mevboost_compose "$node_dir" || { echo "Error: Failed to generate mevboost.yml" >&2; return 1; }
+    fi
 
-    echo -e "${UI_MUTED}Configuration files copied successfully${NC}" >&2
+    # Generate execution client configuration
+    case "$exec_client" in
+        "besu")
+            generate_besu_compose "$node_dir" || { echo "Error: Failed to generate besu.yml" >&2; return 1; }
+            ;;
+        "reth")
+            generate_reth_compose "$node_dir" || { echo "Error: Failed to generate reth.yml" >&2; return 1; }
+            ;;
+        "nethermind")
+            generate_nethermind_compose "$node_dir" || { echo "Error: Failed to generate nethermind.yml" >&2; return 1; }
+            ;;
+        *)
+            echo "Error: Unsupported execution client: $exec_client" >&2
+            return 1
+            ;;
+    esac
+
+    # Generate consensus client configuration
+    case "$cons_client" in
+        "lodestar")
+            generate_lodestar_cl_compose "$node_dir" || { echo "Error: Failed to generate lodestar-cl-only.yml" >&2; return 1; }
+            ;;
+        "teku")
+            generate_teku_cl_compose "$node_dir" || { echo "Error: Failed to generate teku-cl-only.yml" >&2; return 1; }
+            ;;
+        "grandine")
+            generate_grandine_cl_compose "$node_dir" || { echo "Error: Failed to generate grandine-cl-only.yml" >&2; return 1; }
+            ;;
+        *)
+            echo "Error: Unsupported consensus client: $cons_client" >&2
+            return 1
+            ;;
+    esac
+    
+    # Post-process all generated files to replace NODE_NAME placeholder
+    echo -e "${UI_MUTED}Updating node name references in configuration files...${NC}" >&2
+    for file in "$node_dir"/*.yml; do
+        [[ -f "$file" ]] && sed -i "s/\${NODE_NAME}/$node_name/g" "$file"
+    done
+
+    echo -e "${UI_MUTED}Configuration files generated successfully${NC}" >&2
     return 0
 }
 configure_env_file() {
@@ -519,7 +557,6 @@ configure_env_file() {
     local cl_p2p=$CL_P2P_PORT
     local cl_quic=$CL_QUIC_PORT
     local mevboost_port=$MEVBOOST_PORT
-    local el_metrics=$METRICS_PORT
 
     echo -e "${UI_MUTED}Configuring environment file...${NC}" >&2
 
@@ -547,33 +584,18 @@ configure_env_file() {
     fi
     sed -i "s|COMPOSE_FILE=.*|COMPOSE_FILE=$compose_files|" "$node_dir/.env"
 
-    # Fix metrics ports in yml files
-    if [[ "$exec_client" == "reth" ]]; then
-        sed -i "s/\${HOST_IP:-}:9001:9001/\${HOST_IP:-}:${reth_metrics}:9001/" "$node_dir/reth.yml" 2>/dev/null || true
-    elif [[ "$exec_client" == "besu" ]]; then
-        sed -i "s/\${HOST_IP:-}:6060:6060/\${HOST_IP:-}:${el_metrics}:6060/" "$node_dir/besu.yml" 2>/dev/null || true
-    elif [[ "$exec_client" == "nethermind" ]]; then
-        sed -i "s/\${HOST_IP:-}:6060:6060/\${HOST_IP:-}:${el_metrics}:6060/" "$node_dir/nethermind.yml" 2>/dev/null || true
-    fi
+    # Metrics ports are standardized per client type:
+    # - Reth: 9001, Besu: 6060, Nethermind: 6060 
+    # - Consensus clients: 8008
+    # No dynamic allocation needed for metrics ports
 
-    # Fix consensus metrics port
-    for cl_file in lodestar-cl-only.yml teku-cl-only.yml grandine-cl-only.yml; do
-        [[ -f "$node_dir/$cl_file" ]] && sed -i "s/\${HOST_IP:-}:8008:8008/\${HOST_IP:-}:${cl_metrics}:8008/" "$node_dir/$cl_file" 2>/dev/null || true
-    done
-
-    # Set checkpoint sync URL
-    if [[ "$network" == "hoodi" ]]; then
-        sed -i "s|CHECKPOINT_SYNC_URL=.*|CHECKPOINT_SYNC_URL=https://hoodi.beaconstate.ethstaker.cc/|" "$node_dir/.env"
-    else
-        sed -i "s|CHECKPOINT_SYNC_URL=.*|CHECKPOINT_SYNC_URL=https://beaconstate.ethstaker.cc/|" "$node_dir/.env"
-    fi
+    # Checkpoint sync URL is set automatically in .env template based on network
 
     echo -e "${UI_MUTED}Ports configured:${NC}" >&2
     echo -e "${UI_MUTED}  RPC: $el_rpc, WS: $el_ws, Engine: $ee_port${NC}" >&2
     echo -e "${UI_MUTED}  REST: $cl_rest, MEV-Boost: $mevboost_port${NC}" >&2
     echo -e "${UI_MUTED}  P2P: EL=$el_p2p/$el_p2p_2, CL=$cl_p2p/$cl_quic${NC}" >&2
-    echo -e "${UI_MUTED}  Metrics: EL=$el_metrics, CL=$cl_metrics${NC}" >&2
-    [[ "$exec_client" == "reth" ]] && echo -e "${UI_MUTED}  Reth metrics: $reth_metrics${NC}" >&2
+    echo -e "${UI_MUTED}  Metrics: Standard ports per client (Reth:9001, Besu/Nethermind:6060, CL:8008)${NC}" >&2
 
     # Validate configuration
     if grep -q "{{NODE_NAME}}\|{{NETWORK}}\|{{COMPOSE_FILE}}" "$node_dir/.env"; then
@@ -644,17 +666,17 @@ collect_installation_config() {
     config_ref[network]=$(prompt_network)
     [[ -z "${config_ref[network]}" ]] && return 1
     
-    config_ref[exec_client]=$(prompt_execution_client)
-    [[ -z "${config_ref[exec_client]}" ]] && return 1
+    # Get execution client and version in one step
+    local exec_result=$(prompt_execution_client_with_version)
+    [[ -z "$exec_result" ]] && return 1
+    config_ref[exec_client]="${exec_result%:*}"
+    config_ref[exec_version]="${exec_result#*:}"
     
-    config_ref[exec_version]=$(prompt_version "${config_ref[exec_client]}" "execution")
-    [[ -z "${config_ref[exec_version]}" ]] && return 1
-    
-    config_ref[cons_client]=$(prompt_consensus_client)
-    [[ -z "${config_ref[cons_client]}" ]] && return 1
-    
-    config_ref[cons_version]=$(prompt_version "${config_ref[cons_client]}" "consensus")
-    [[ -z "${config_ref[cons_version]}" ]] && return 1
+    # Get consensus client and version in one step
+    local cons_result=$(prompt_consensus_client_with_version)
+    [[ -z "$cons_result" ]] && return 1
+    config_ref[cons_client]="${cons_result%:*}"
+    config_ref[cons_version]="${cons_result#*:}"
     
     return 0
 }
@@ -675,7 +697,8 @@ configure_mevboost_option() {
         if [[ $mevboost_choice -eq 0 ]]; then
             echo -e "${UI_MUTED}MEV-boost will be included${NC}"
             set +e
-            config_ref[mevboost_version]=$(prompt_version "mevboost" "mevboost")
+            local mevboost_result=$(prompt_mevboost_with_version)
+            config_ref[mevboost_version]="${mevboost_result#*:}"
             local version_result=$?
             set -e
             case $version_result in
@@ -722,9 +745,19 @@ configure_network_access() {
         3)
             sed -i "s/HOST_IP=.*/HOST_IP=0.0.0.0/" "$node_dir/.env"
             echo -e "${RED}⚠ WARNING: RPC/REST APIs accessible from ALL networks${NC}"
-            echo -e "${UI_MUTED}Make sure you haven't forwarded these ports on your router!${NC}"
-            local ack_options=("I understand the security risk")
-            fancy_select_menu "Security Warning Acknowledgment" "${ack_options[@]}" > /dev/null
+            echo
+            echo -e "${UI_MUTED}What this means:${NC}"
+            echo -e "${UI_MUTED}• Your Ethereum node APIs will be accessible from your local network${NC}"
+            echo -e "${UI_MUTED}• This is safe as long as you haven't opened/forwarded these ports on your router${NC}"
+            echo -e "${UI_MUTED}• Only becomes unsafe if you expose these ports to the internet${NC}"
+            echo
+            echo -e "${YELLOW}Security checklist:${NC}"
+            echo -e "${UI_MUTED}✓ Router ports NOT forwarded to this machine${NC}"
+            echo -e "${UI_MUTED}✓ Firewall properly configured${NC}"
+            echo -e "${UI_MUTED}✓ Local network is trusted${NC}"
+            echo
+            local ack_options=("I understand the security implications and my network is secure")
+            fancy_select_menu "Security Acknowledgment" "${ack_options[@]}" > /dev/null
             ;;
         *)
             sed -i "s/HOST_IP=.*/HOST_IP=127.0.0.1/" "$node_dir/.env"
@@ -886,20 +919,29 @@ install_node() {
 
     # Copy configuration files to staging
     echo -e "${UI_MUTED}Creating configuration files...${NC}"
-    copy_config_files "$node_dir" "${config[exec_client]}" "${config[cons_client]}"
+    local node_uid=$(echo "$uid_gid" | cut -d':' -f1)
+    local node_gid=$(echo "$uid_gid" | cut -d':' -f2)
+    local mevboost_enabled="false"
+    [[ "${config[mevboost]}" == "yes" ]] && mevboost_enabled="true"
     
-    # Create compose.yml with isolated network architecture
-    echo -e "${UI_MUTED}Configuring for 2-network architecture...${NC}"
-    create_atomic_compose_file "$node_dir"
+    # Allocate ports for this ethnode
+    local include_mevboost="false"
+    [[ "${config[mevboost]}" == "yes" ]] && include_mevboost="true"
+    local port_assignments=$(allocate_node_ports "$node_name" "${config[exec_client]}" "${config[cons_client]}" "$include_mevboost")
+    if [[ $? -ne 0 ]]; then
+        echo "Failed to allocate ports for $node_name" >&2
+        return 1
+    fi
+    eval "$port_assignments"
+    
+    copy_config_files "$node_dir" "${config[exec_client]}" "${config[cons_client]}" "$node_name" "$node_uid" "$node_gid" "${config[network]}" "$mevboost_enabled" "$EL_RPC_PORT" "$EL_WS_PORT" "$EE_PORT" "$EL_P2P_PORT" "$EL_P2P_PORT_2" "$CL_REST_PORT" "$CL_P2P_PORT" "$CL_QUIC_PORT" "$MEVBOOST_PORT"
 
     # Update versions if specified
     [[ -n "${config[exec_version]}" ]] && update_client_version "$node_dir" "${config[exec_client]}" "${config[exec_version]}"
     [[ -n "${config[cons_version]}" ]] && update_client_version "$node_dir" "${config[cons_client]}" "${config[cons_version]}"
     [[ -n "${config[mevboost_version]}" ]] && update_client_version "$node_dir" "mevboost" "${config[mevboost_version]}"
 
-    # Configure environment file with ports
-    echo -e "${UI_MUTED}Configuring environment file...${NC}"
-    configure_env_file "$node_dir" "$node_name" "$uid_gid" "${config[exec_client]}" "${config[cons_client]}" "${config[network]}"
+    # Environment file configured directly by centralized templates
 
     # MEV-boost configuration
     if ! configure_mevboost_option config; then
@@ -1010,20 +1052,33 @@ install_node() {
     echo -e "${UI_MUTED}Final network verification before Docker Compose...${NC}"
     docker network ls --format "{{.Name}}" | grep "${node_name}-net" || echo -e "${YELLOW}WARNING: ${node_name}-net not found!${NC}"
     
-    # Start containers with proper error handling
-    local temp_output=$(mktemp)
-    if docker compose up -d > "$temp_output" 2>&1; then
-        echo -e "${UI_MUTED}✓ All services started successfully${NC}"
+    # Start containers via ULCS
+    echo -e "${UI_MUTED}Starting ethnode via ULCS...${NC}"
+    if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+        source "${NODEBOI_LIB}/ulcs.sh"
+        if start_service_universal "$node_name"; then
+            echo -e "${UI_MUTED}✓ All services started successfully${NC}"
+        else
+            echo -e "${YELLOW}Warning: Failed to start via ULCS${NC}"
+            echo -e "${UI_MUTED}Services can be started manually with:${NC}"
+            echo -e "${UI_MUTED}  source ${NODEBOI_LIB}/ulcs.sh && start_service_universal $node_name${NC}"
+        fi
     else
-        echo -e "${YELLOW}Warning: Some services may have startup issues${NC}"
-        echo -e "${UI_MUTED}Error details:${NC}"
-        cat "$temp_output"
-        echo
-        echo -e "${UI_MUTED}Services can be restarted manually with:${NC}"
+        echo -e "${RED}ULCS not available - manual start required${NC}"
         echo -e "${UI_MUTED}  cd $final_dir && docker compose up -d${NC}"
     fi
-    rm -f "$temp_output" 2>/dev/null || true
 
+    # Trigger ULCS monitoring integration for newly installed ethnode
+    if [[ -f "${NODEBOI_LIB}/ulcs-monitoring.sh" ]]; then
+        source "${NODEBOI_LIB}/ulcs-monitoring.sh"
+        echo -e "${UI_MUTED}Integrating with monitoring system...${NC}"
+        if ulcs_generate_prometheus_config; then
+            echo -e "${UI_MUTED}✓ Monitoring integration completed${NC}"
+        else
+            echo -e "${YELLOW}Warning: Monitoring integration failed${NC}"
+        fi
+    fi
+    
     # Force immediate dashboard refresh to show new node
     [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
     
@@ -1035,6 +1090,38 @@ install_node() {
         [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard
     ) &
 
+    echo
+    
+    # Health check confirmation step
+    echo -e "${UI_MUTED}Checking service health...${NC}"
+    cd "$final_dir"
+    
+    # Wait for containers to be running first
+    echo -e "${UI_MUTED}[CHECKING] Verifying Ethereum node containers...${NC}"
+    local max_wait=10
+    local wait_count=0
+    while [[ $wait_count -lt $max_wait ]]; do
+        local container_count=$(docker compose ps --services | wc -l)
+        local running_count=$(docker compose ps --status running | wc -l)
+        
+        if [[ "$running_count" -eq "$container_count" ]]; then
+            echo -e "${GREEN}✓ All containers are running${NC}"
+            break
+        else
+            # Show what's happening based on wait time
+            case $wait_count in
+                0) echo -e "${UI_MUTED}[CHECKING] Verifying images are ready...${NC}" ;;
+                2) echo -e "${UI_MUTED}[CHECKING] Checking container status...${NC}" ;;
+                4) echo -e "${UI_MUTED}[CHECKING] Waiting for execution client...${NC}" ;;
+                6) echo -e "${UI_MUTED}[CHECKING] Waiting for consensus client...${NC}" ;;
+                8) echo -e "${UI_MUTED}[CHECKING] Finalizing health check...${NC}" ;;
+                *) echo -e "${UI_MUTED}[CHECKING] Container status ($wait_count/${max_wait}s)...${NC}" ;;
+            esac
+            sleep 2
+            ((wait_count+=2))
+        fi
+    done
+    
     echo
     echo -e "${GREEN}[✓] Installation complete.${NC}"
     echo
@@ -1097,34 +1184,13 @@ install_node() {
         echo
     fi
     
-    # Update monitoring integration if installed (DICKS)
-    if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-        echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
-        source "${NODEBOI_LIB}/monitoring.sh" 
-        source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
-        manage_service_networks "sync" "silent"
-        
-        # Regenerate prometheus configuration and dashboards for new ethnode
-        sync_grafana_dashboards
-        echo -e "${GREEN}✓ Monitoring integration updated${NC}"
-        echo
-        
-        # Final dashboard refresh to show monitoring updates  
-        if [[ -f "${NODEBOI_LIB}/manage.sh" ]]; then
-            source "${NODEBOI_LIB}/manage.sh" && force_refresh_dashboard >/dev/null 2>&1 || true
-        fi
-    fi
-    
-    # Remove signal trap - installation completed successfully
-    trap - SIGINT SIGTERM SIGQUIT
-    
-    
-    # Health check confirmation step
-    echo -e "${UI_MUTED}Checking service health...${NC}"
+    # Installation complete - return to main menu
+    return 0
     cd "$final_dir"
     
     # Wait for containers to be running first
-    local max_wait=30
+    echo -e "${UI_MUTED}[CHECKING] Verifying Ethereum node containers...${NC}"
+    local max_wait=10
     local wait_count=0
     while [[ $wait_count -lt $max_wait ]]; do
         local container_count=$(docker compose ps --services | wc -l)
@@ -1134,7 +1200,15 @@ install_node() {
             echo -e "${GREEN}✓ All containers are running${NC}"
             break
         else
-            echo -e "${UI_MUTED}⏳ Waiting for containers to start ($wait_count/$max_wait)...${NC}"
+            # Show what's happening based on wait time
+            case $wait_count in
+                0) echo -e "${UI_MUTED}[CHECKING] Verifying images are ready...${NC}" ;;
+                2) echo -e "${UI_MUTED}[CHECKING] Checking container status...${NC}" ;;
+                4) echo -e "${UI_MUTED}[CHECKING] Waiting for execution client...${NC}" ;;
+                6) echo -e "${UI_MUTED}[CHECKING] Waiting for consensus client...${NC}" ;;
+                8) echo -e "${UI_MUTED}[CHECKING] Finalizing health check...${NC}" ;;
+                *) echo -e "${UI_MUTED}[CHECKING] Container status ($wait_count/${max_wait}s)...${NC}" ;;
+            esac
             sleep 2
             ((wait_count+=2))
         fi
@@ -1174,14 +1248,14 @@ install_node() {
                         --max-time 3 2>/dev/null)
                     
                     if echo "$block_response" | grep -q '"result":"0x0"'; then
-                        echo -e "${YELLOW}⏳ Execution client waiting for peers ($sync_wait_count/$sync_check_wait)...${NC}"
+                        echo -e "${YELLOW}[PROGRESS] Execution client waiting for peers ($sync_wait_count/$sync_check_wait)...${NC}"
                     else
                         echo -e "${GREEN}✓ Execution client is ready${NC}"
                         break
                     fi
                 fi
             else
-                echo -e "${YELLOW}⏳ Execution client starting up ($sync_wait_count/$sync_check_wait)...${NC}"
+                echo -e "${YELLOW}[PROGRESS] Execution client starting up ($sync_wait_count/$sync_check_wait)...${NC}"
             fi
             
             sleep 3
@@ -1201,7 +1275,7 @@ install_node() {
                     echo -e "${GREEN}✓ Consensus client is syncing${NC}"
                     break
                 elif echo "$cl_sync_response" | grep -q '"el_offline":true'; then
-                    echo -e "${YELLOW}⏳ Consensus client waiting for execution layer ($sync_wait_count/$sync_check_wait)...${NC}"
+                    echo -e "${YELLOW}[PROGRESS] Consensus client waiting for execution layer ($sync_wait_count/$sync_check_wait)...${NC}"
                 else
                     echo -e "${GREEN}✓ Consensus client is ready${NC}"
                     break
@@ -1210,7 +1284,7 @@ install_node() {
                 echo -e "${GREEN}✓ Consensus client is syncing${NC}"
                 break
             else
-                echo -e "${YELLOW}⏳ Consensus client starting up ($sync_wait_count/$sync_check_wait)...${NC}"
+                echo -e "${YELLOW}[PROGRESS] Consensus client starting up ($sync_wait_count/$sync_check_wait)...${NC}"
             fi
             
             sleep 3
@@ -1234,109 +1308,19 @@ install_node() {
     fi
     
     echo
-    echo -e "${GREEN}[✓] Installation complete.${NC}"
-    echo
-    echo -e "${UI_MUTED}Updating monitoring integration...${NC}"
-    echo -e "${GREEN}✓ $node_name installation completed successfully${NC}"
+    echo -e "${GREEN}[✓] $node_name installation complete.${NC}"
     echo
     echo -e "${UI_MUTED}Press Enter to return to NODEBOI main menu...${NC}"
     read -r
     
-    # Trigger dashboard refresh when user presses Enter (not automatically)
-    echo -e "${UI_MUTED}Refreshing dashboard...${NC}"
-    if [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && declare -f force_refresh_dashboard >/dev/null 2>&1; then
-        force_refresh_dashboard >/dev/null 2>&1 || true
-        echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
-    elif declare -f trigger_dashboard_refresh >/dev/null 2>&1; then
-        trigger_dashboard_refresh "installation_completed" "$node_name" >/dev/null 2>&1 || true
-        echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
-    else
-        echo -e "${UI_MUTED}⚠ Dashboard refresh not available${NC}"
-    fi
-    
-    # Ensure function returns properly to calling menu
+    # ULCS has already handled dashboard refresh and monitoring integration
     echo -e "${UI_MUTED}Returning to main menu...${NC}"
+    
+    # Set flag to return to main menu after ULCS operation
+    RETURN_TO_MAIN_MENU=true
     return 0
 }
 
-# ULCS-compatible ethnode installation wrapper
-install_ethnode_universal() {
-    echo -e "${UI_MUTED}Starting ethnode installation via Universal Service Lifecycle System...${NC}"
-    
-    # Collect configuration from user
-    declare -A config
-    if ! collect_installation_config config; then
-        echo -e "${RED}Installation cancelled${NC}" >&2
-        return 1
-    fi
-    
-    local node_name="${config[node_name]}"
-    
-    # Check if service already exists
-    if [[ -d "$HOME/$node_name" ]]; then
-        echo -e "${YELLOW}${node_name} is already installed at $HOME/$node_name${NC}"
-        echo -e "${UI_MUTED}Please remove it first if you want to reinstall${NC}"
-        return 1
-    fi
-    
-    # Prepare config parameters for ULCS
-    local config_json="{\"node_name\":\"$node_name\""
-    for key in "${!config[@]}"; do
-        if [[ "$key" != "node_name" ]]; then
-            config_json="${config_json},\"$key\":\"${config[$key]}\""
-        fi
-    done
-    config_json="${config_json}}"
-    
-    # Call Universal Service Lifecycle System for installation
-    if [[ -f "${NODEBOI_LIB}/universal-service-lifecycle.sh" ]]; then
-        source "${NODEBOI_LIB}/universal-service-lifecycle.sh"
-        init_service_flows
-        
-        echo -e "${UI_MUTED}Installing via ULCS...${NC}"
-        if install_service_universal "$node_name" "ethnode" "$config_json"; then
-            echo -e "${GREEN}✓ $node_name installed successfully via ULCS${NC}"
-            
-            # Update monitoring integration and dependent validators (DICKS)
-            if [[ -d "$HOME/monitoring" ]] && [[ -f "${NODEBOI_LIB}/monitoring.sh" ]]; then
-                echo -e "${UI_MUTED}Updating validator connections and monitoring...${NC}"
-                source "${NODEBOI_LIB}/monitoring.sh" 
-                source "${NODEBOI_LIB}/grafana-dashboard-management.sh"
-                manage_service_networks "sync" "silent"
-                
-                # Regenerate prometheus configuration and dashboards for new ethnode
-                sync_grafana_dashboards
-                echo -e "${GREEN}✓ Validator connections and monitoring updated${NC}"
-            fi
-            
-            # Trigger dashboard refresh
-            echo -e "${UI_MUTED}Refreshing dashboard...${NC}"
-            if [[ -f "${NODEBOI_LIB}/manage.sh" ]] && source "${NODEBOI_LIB}/manage.sh" && declare -f force_refresh_dashboard >/dev/null 2>&1; then
-                force_refresh_dashboard >/dev/null 2>&1 || true
-                echo -e "${UI_MUTED}✓ Dashboard refreshed${NC}"
-            fi
-            
-            echo -e "${UI_MUTED}Installation complete. Returning to main menu...${NC}"
-            return 0
-        else
-            echo -e "${RED}✗ Installation failed via ULCS${NC}"
-            return 1
-        fi
-    else
-        echo -e "${RED}✗ Universal Service Lifecycle System not available${NC}"
-        echo -e "${UI_MUTED}Falling back to legacy installation...${NC}"
-        # Fallback to legacy installation if ULCS not available
-        install_node_legacy
-        return $?
-    fi
-}
-
-# Rename the original install_node to install_node_legacy 
-install_node_legacy() {
-    # This is the original install_node function - kept as fallback
-    echo -e "${YELLOW}⚠ Using legacy installation method${NC}"
-    install_node
-}
 
 # Check if a node has updates available
 has_updates_available() {
@@ -1479,9 +1463,15 @@ update_node() {
                 
                 echo -e "${UI_MUTED}  Pulling latest images...${NC}"
                 docker compose pull > /dev/null 2>&1
-                echo -e "${UI_MUTED}  Restarting services...${NC}"
-                safe_docker_stop "$node_name"
-                docker compose up -d --force-recreate > /dev/null 2>&1
+                echo -e "${UI_MUTED}  Restarting services via ULCS...${NC}"
+                if [[ -f "${NODEBOI_LIB}/ulcs.sh" ]]; then
+                    source "${NODEBOI_LIB}/ulcs.sh"
+                    stop_service_universal "$node_name" > /dev/null 2>&1
+                    start_service_universal "$node_name" > /dev/null 2>&1
+                else
+                    safe_docker_stop "$node_name"
+                    docker compose up -d --force-recreate > /dev/null 2>&1
+                fi
                 echo -e "  ${GREEN}✓ $node_name updated${NC}\n"
             done
             
