@@ -191,7 +191,7 @@ EOF
         "remove": ["stop_services", "update_dependents", "remove_containers", "remove_volumes", "remove_networks", "remove_directories", "cleanup_integrations"],
         "start": ["ensure_networks", "ensure_database", "start_services", "health_check"],
         "stop": ["stop_services"],
-        "update": ["pull_images", "migrate_database", "recreate_services", "health_check"]
+        "update": ["pull_images", "migrate_database", "recreate_services", "health_check", "refresh_dashboard"]
     },
     "integration_hooks": {
         "validators": "update_signing_config"
