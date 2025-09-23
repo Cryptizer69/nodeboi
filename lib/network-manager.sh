@@ -103,15 +103,6 @@ manage_service_networks() {
     local changes_made=false
     local services_to_restart=()
     
-    # Rebuild monitoring compose.yml with multi-network prometheus access
-    if [[ -d "$HOME/monitoring" && -f "$HOME/monitoring/.env" ]]; then
-        rebuild_monitoring_compose_yml_isolated "$monitoring_net" "${ethnode_networks[@]}" "$validator_net"
-        if [[ $? -eq 0 ]]; then
-            services_to_restart+=("$HOME/monitoring")
-            changes_made=true
-            [[ "$silent_mode" != "silent" ]] && echo "  → Updated monitoring for isolated networks"
-        fi
-    fi
     
     # Rebuild Vero compose.yml with multi-network access
     if [[ -d "$HOME/vero" && -f "$HOME/vero/.env" ]]; then
@@ -215,9 +206,6 @@ rebuild_service_compose_yml() {
     
     # Generate service-specific compose content
     case "$service_type" in
-        monitoring)
-            generate_network_monitoring_compose "$temp_file" "${networks[@]}"
-            ;;
         vero)
             # Convert networks array to ethnodes for centralized template
             local ethnodes=()
@@ -251,137 +239,6 @@ rebuild_service_compose_yml() {
     fi
 }
 
-# Generate monitoring compose.yml with network connections
-generate_network_monitoring_compose() {
-    local temp_file="$1"
-    shift
-    local networks=("$@")
-    
-    # Extract network types
-    local monitoring_net=""
-    local ethnode_networks=()
-    local validator_net=""
-    
-    for net in "${networks[@]}"; do
-        case "$net" in
-            monitoring-net) monitoring_net="$net" ;;
-            validator-net) validator_net="$net" ;;
-            ethnode*-net) ethnode_networks+=("$net") ;;
-        esac
-    done
-    
-    cat > "$temp_file" <<EOF
-x-logging: &logging
-  logging:
-    driver: json-file
-    options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
-services:
-  prometheus:
-    image: prom/prometheus:\${PROMETHEUS_VERSION}
-    container_name: monitoring-prometheus
-    hostname: prometheus
-    restart: unless-stopped
-    user: "65534:65534"
-    command:
-      - --storage.tsdb.retention.time=30d
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --web.console.libraries=/etc/prometheus/console_libraries
-      - --web.console.templates=/etc/prometheus/consoles
-      - --web.enable-lifecycle
-      - --web.enable-admin-api
-    networks:
-      - $monitoring_net
-EOF
-    
-    # Add ethnode networks to prometheus
-    for network in "${ethnode_networks[@]}"; do
-        echo "      - $network" >> "$temp_file"
-    done
-    
-    # Add validator network if present
-    [[ -n "$validator_net" ]] && echo "      - $validator_net" >> "$temp_file"
-    
-    cat >> "$temp_file" <<EOF
-    ports:
-      - \${HOST_IP:-}:\${PROMETHEUS_PORT}:9090
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    <<: *logging
-
-  grafana:
-    image: grafana/grafana:\${GRAFANA_VERSION}
-    container_name: monitoring-grafana
-    hostname: grafana
-    restart: unless-stopped
-    user: "\${NODE_UID}:\${NODE_GID}"
-    networks:
-      - $monitoring_net
-    ports:
-      - \${HOST_IP:-}:\${GRAFANA_PORT}:3000
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
-    <<: *logging
-
-  node-exporter:
-    image: prom/node-exporter:\${NODE_EXPORTER_VERSION}
-    container_name: monitoring-node-exporter
-    hostname: node-exporter
-    restart: unless-stopped
-    networks:
-      - $monitoring_net
-    ports:
-      - \${HOST_IP:-}:\${NODE_EXPORTER_PORT}:9100
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - --path.procfs=/host/proc
-      - --path.rootfs=/rootfs
-      - --path.sysfs=/host/sys
-      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
-    <<: *logging
-
-volumes:
-  prometheus-data:
-  grafana-data:
-
-networks:
-  $monitoring_net:
-    external: true
-    name: $monitoring_net
-EOF
-    
-    # Add external network definitions
-    for network in "${ethnode_networks[@]}"; do
-        cat >> "$temp_file" <<EOF
-  $network:
-    external: true
-    name: $network
-EOF
-    done
-    
-    # Add validator network if present
-    if [[ -n "$validator_net" ]]; then
-        cat >> "$temp_file" <<EOF
-  $validator_net:
-    external: true
-    name: $validator_net
-EOF
-    fi
-}
 
 
 # Generate Teku validator compose.yml with network connections  
@@ -484,19 +341,6 @@ EOF
 }
 
 # Convenience functions that match the old API for backward compatibility
-rebuild_monitoring_compose_yml_isolated() {
-    # Use Docker network discovery instead of passed parameters for robust network detection
-    local discovered_ethnode_networks=$(docker network ls --format "{{.Name}}" | grep "^ethnode[0-9]*-net$" | sort -V)
-    local all_networks=("monitoring-net")
-    
-    # Add discovered ethnode networks
-    for network in $discovered_ethnode_networks; do
-        all_networks+=("$network")
-    done
-    all_networks+=("validator-net")
-    
-    rebuild_service_compose_yml "monitoring" "$HOME/monitoring" "${all_networks[@]}"
-}
 
 rebuild_vero_compose_yml_isolated() {
     local validator_net="$1"

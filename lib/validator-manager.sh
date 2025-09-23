@@ -683,9 +683,9 @@ Fee recipient address:" \
         
         # Build beacon URL
         if [[ -n "$beacon_urls" ]]; then
-            beacon_urls="${beacon_urls},http://${ethnode}:5052"
+            beacon_urls="${beacon_urls},http://${ethnode}-${beacon_client}:5052"
         else
-            beacon_urls="http://${ethnode}:5052"
+            beacon_urls="http://${ethnode}-${beacon_client}:5052"
         fi
     done
     

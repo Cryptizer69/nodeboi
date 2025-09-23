@@ -73,6 +73,16 @@ LOG_LEVEL=INFO
 EOF
 
     chmod 600 "${service_dir}/.env"
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "vero" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # Generate Vero compose.yml file
@@ -91,16 +101,30 @@ generate_vero_compose() {
         output_file="${service_dir}/compose.yml"
     fi
     
-    # Build ethnode networks dynamically
+    # Build ethnode networks dynamically - only include networks with running beacon clients
     local ethnode_networks=""
     local ethnode_network_defs=""
     for ethnode in "${ethnodes[@]}"; do
-        ethnode_networks="${ethnode_networks}
+        local ethnode_net="${ethnode}-net"
+        
+        # Check if any beacon client is running in this ethnode network
+        local beacon_client_running=false
+        for client in "grandine" "lodestar" "lighthouse" "teku"; do
+            if docker ps --format "{{.Names}}" | grep -q "^${ethnode}-${client}$"; then
+                beacon_client_running=true
+                break
+            fi
+        done
+        
+        # Only add network if beacon client is running
+        if [[ "$beacon_client_running" == "true" ]]; then
+            ethnode_networks="${ethnode_networks}
       - ${ethnode}-net"
-        ethnode_network_defs="${ethnode_network_defs}
+            ethnode_network_defs="${ethnode_network_defs}
   ${ethnode}-net:
     external: true
     name: ${ethnode}-net"
+        fi
     done
     
     cat > "${output_file}" <<EOF
@@ -147,6 +171,16 @@ networks:
     external: true
     name: web3signer-net${ethnode_network_defs}
 EOF
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "vero" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # =============================================================================
@@ -206,6 +240,16 @@ POSTGRES_PASSWORD=${postgres_password}
 EOF
 
     chmod 600 "${service_dir}/.env"
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "web3signer" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # Generate Web3signer compose.yml file
@@ -364,6 +408,16 @@ networks:
     driver: bridge
     external: true
 EOF
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "web3signer" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # =============================================================================
@@ -502,6 +556,16 @@ LODESTAR_HEAP_MB=8192
 EOF
 
     chmod 600 "${service_dir}/.env"
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "${node_name}" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # Generate Ethnode base compose.yml file
@@ -1127,6 +1191,16 @@ JAVA_OPTS=-Xmx2g
 # Selected ethnode for network connection
 SELECTED_ETHNODE=${selected_ethnode}
 EOF
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "teku-validator" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 # Generate Teku Validator compose.yml file
@@ -1191,6 +1265,16 @@ EOF
 
     # Replace the placeholder with the actual ethnode name
     sed -i "s/ETHNODE_PLACEHOLDER/${selected_ethnode}/g" "${service_dir}/compose.yml"
+    
+    # Trigger dashboard refresh for configuration changes (ULCS integration)
+    if declare -f update_service_dashboards >/dev/null 2>&1; then
+        update_service_dashboards "teku-validator" 2>/dev/null || true
+    elif [[ -f "${NODEBOI_LIB}/common.sh" ]]; then
+        source "${NODEBOI_LIB}/common.sh" 2>/dev/null
+        if declare -f refresh_dashboard >/dev/null 2>&1; then
+            refresh_dashboard >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 #=============================================================================
@@ -1279,12 +1363,31 @@ EOF
 # Append networks to compose file
 append_monitoring_networks() {
     local service_dir="$1"
-    shift
+    local service_type="$2"
+    shift 2
     local networks=("$@")
     
-    for network in "${networks[@]}"; do
-        echo "      - $network" >> "${service_dir}/compose.yml"
-    done
+    case "$service_type" in
+        "prometheus")
+            # Prometheus needs monitoring-net + scraping networks
+            echo "      - monitoring-net" >> "${service_dir}/compose.yml"
+            for network in "${networks[@]}"; do
+                if [[ "$network" != "monitoring-net" ]]; then
+                    echo "      - $network" >> "${service_dir}/compose.yml"
+                fi
+            done
+            ;;
+        "grafana"|"node-exporter")
+            # Grafana and node-exporter only need monitoring-net
+            echo "      - monitoring-net" >> "${service_dir}/compose.yml"
+            ;;
+        *)
+            # Fallback: add all networks (for compatibility)
+            for network in "${networks[@]}"; do
+                echo "      - $network" >> "${service_dir}/compose.yml"
+            done
+            ;;
+    esac
 }
 
 # Generate Monitoring compose.yml file (part 2 - grafana section)
@@ -1495,11 +1598,11 @@ generate_complete_monitoring_stack() {
     
     # Generate compose file in parts
     generate_monitoring_compose_base "$staging_dir"
-    append_monitoring_networks "$staging_dir" "${unique_networks[@]}"
+    append_monitoring_networks "$staging_dir" "prometheus" "${unique_networks[@]}"
     generate_monitoring_compose_grafana "$staging_dir"
-    append_monitoring_networks "$staging_dir" "${unique_networks[@]}"
+    append_monitoring_networks "$staging_dir" "grafana" "${unique_networks[@]}"
     generate_monitoring_compose_node_exporter "$staging_dir"
-    append_monitoring_networks "$staging_dir" "${unique_networks[@]}"
+    append_monitoring_networks "$staging_dir" "node-exporter" "${unique_networks[@]}"
     generate_monitoring_compose_footer "$staging_dir" "${unique_networks[@]}"
     
     # Generate config files
