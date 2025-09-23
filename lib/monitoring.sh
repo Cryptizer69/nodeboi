@@ -214,19 +214,19 @@ check_monitoring_health() {
         fi
         
         printf "     %b %-25s (%s)%b\t     http://%s:%s/dashboards\n" \
-            "$grafana_status" "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+            "$grafana_status" "grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
         printf "     %b %-25s (%s)%b\t     http://%s:%s\n" \
-            "$prometheus_status" "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
+            "$prometheus_status" "prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
         printf "     %b %-25s (%s)%b\n" \
-            "$node_exporter_status" "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
+            "$node_exporter_status" "node-exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     else
         echo -e "  ${RED}●${NC} monitoring - ${RED}Stopped${NC}"
         printf "     %-25s (%s)%b\t     http://%s:%s/dashboards\n" \
-            "Grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
+            "grafana" "$(display_version "grafana" "$grafana_version")" "$grafana_update_indicator" "$display_ip" "$grafana_port"
         printf "     %-25s (%s)%b\t     http://%s:%s\n" \
-            "Prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
+            "prometheus" "$(display_version "prometheus" "$prometheus_version")" "$prometheus_update_indicator" "$display_ip" "$prometheus_port"
         printf "     %-25s (%s)%b\n" \
-            "Node Exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
+            "node-exporter" "$(display_version "node-exporter" "$node_exporter_version")" "$node_exporter_update_indicator"
     fi
     echo
     echo

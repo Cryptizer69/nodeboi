@@ -370,24 +370,24 @@ check_node_health() {
     local cons_version=""
 
     if [[ "$compose_file" == *"reth.yml"* ]]; then
-        exec_client="Reth"
+        exec_client="reth"
         exec_version=$(grep "RETH_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     elif [[ "$compose_file" == *"besu.yml"* ]]; then
-        exec_client="Besu"
+        exec_client="besu"
         exec_version=$(grep "BESU_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     elif [[ "$compose_file" == *"nethermind.yml"* ]]; then
-        exec_client="Nethermind"
+        exec_client="nethermind"
         exec_version=$(grep "NETHERMIND_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     fi
 
     if [[ "$compose_file" == *"lodestar-cl-only.yml"* ]]; then
-        cons_client="Lodestar"
+        cons_client="lodestar"
         cons_version=$(grep "LODESTAR_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     elif [[ "$compose_file" == *"teku-cl-only.yml"* ]]; then
-        cons_client="Teku"
+        cons_client="teku"
         cons_version=$(grep "TEKU_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     elif [[ "$compose_file" == *"grandine-cl-only.yml"* ]]; then
-        cons_client="Grandine"
+        cons_client="grandine"
         cons_version=$(grep "GRANDINE_VERSION=" "$node_dir/.env" 2>/dev/null | cut -d'=' -f2 | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
     fi
 
@@ -636,7 +636,7 @@ local sync_response=$(curl -s -X POST "http://${check_host}:${el_rpc}" \
         # MEV-boost line (only show if it's running)
         if [[ "$mevboost_check" == "${GREEN}✓${NC}" ]]; then
             printf "     %b %-25s (%s)%b\n" \
-                "$mevboost_check" "MEV-boost" "$(display_version "mevboost" "$mevboost_version")" "$mevboost_update_indicator"
+                "$mevboost_check" "mev-boost" "$(display_version "mevboost" "$mevboost_version")" "$mevboost_update_indicator"
         fi
     else
         echo -e "  ${RED}●${NC} $node_name ($network) - ${RED}Stopped${NC}"
@@ -717,10 +717,19 @@ check_web3signer_health() {
     
     if [[ "$containers_running" == true ]]; then
         echo -e "  $status_indicator web3signer ($network) ${access_indicator}"
+        
+        # Check Postgres container status
+        local postgres_check="${RED}✗${NC}"
+        if docker ps --filter name=web3signer-postgres --filter status=running --format "{{.Names}}" | grep -q "^web3signer-postgres$"; then
+            postgres_check="${GREEN}✓${NC}"
+        fi
+        
+        printf "     %b %-25s\n" "$postgres_check" "postgres"
         printf "     %b %-25s (%s)%b\n" "$w3s_check" "web3signer" "$(display_version "web3signer" "$version")" "$w3s_update_indicator"
         printf "     %s %-20s\n" "" "$keystore_count active keys"
     else
         echo -e "  ${status_indicator} web3signer (${network}) ${access_indicator}"
+        printf "     ${RED}✗${NC} %-25s\n" "postgres"
         echo -e "     ${RED}● Stopped${NC}"
     fi
     echo
@@ -813,7 +822,7 @@ print(result)
             attestation_indicator="${GREEN}✓${NC}"
         fi
         printf "     ${attestation_indicator} %-25s (%s)\n" "$attestation_status" "$(display_version "vero" "$version")"
-        printf "     %s %-20s\n" "" "Connected to:"
+        printf "     %s %-20s\n" "" "connected to:"
         
         # Handle case where no beacon nodes are configured
         if [[ $beacon_count -eq 0 ]]; then
@@ -993,7 +1002,7 @@ check_teku_validator_health() {
         
         # Show beacon node connection if configured
         if [[ -n "$beacon_urls" && "$beacon_urls" != "" ]]; then
-            printf "     %s %-20s\n" "" "Connected to:"
+            printf "     %s %-20s\n" "" "connected to:"
             
             # Display beacon node connection status
             for url in $beacon_url_list; do
@@ -1001,16 +1010,8 @@ check_teku_validator_health() {
                 local container_name=$(echo "$url" | sed 's|http://||g' | sed 's|:.*||g')
                 local port=$(echo "$url" | sed 's|.*:||g')
                 
-                # Create display name: ethnode1-grandine -> ethnode1-Grandine
-                # Split on dash and capitalize the client name part
-                local node_part=$(echo "$container_name" | cut -d'-' -f1)
-                local client_part=$(echo "$container_name" | cut -d'-' -f2)
-                local display_name="$node_part"
-                if [[ -n "$client_part" ]]; then
-                    # Capitalize first letter of client name
-                    local capitalized_client="$(echo "$client_part" | sed 's/^./\U&/')"
-                    display_name="$node_part-$capitalized_client"
-                fi
+                # Create display name: ethnode1-grandine -> ethnode1-grandine (lowercase)
+                local display_name="$container_name"
                 
                 # Debug: skip empty URLs
                 [[ -z "$display_name" || -z "$container_name" ]] && continue
