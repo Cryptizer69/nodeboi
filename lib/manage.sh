@@ -66,6 +66,20 @@ check_prerequisites() {
             echo -e "  ${YELLOW}Docker is installed but Compose v2 is missing${NC}"
             install_docker=true
         fi
+        
+        # Test Docker daemon connectivity
+        if docker info >/dev/null 2>&1; then
+            echo -e "  ${UI_MUTED}docker daemon: ${GREEN}✓${NC}"
+        else
+            echo -e "  ${UI_MUTED}docker daemon: ${RED}✗${NC}"
+            echo -e "\n${RED}Docker daemon is not accessible${NC}"
+            echo -e "${UI_MUTED}This could be due to:${NC}"
+            echo -e "${UI_MUTED}  • Docker daemon not running${NC}"
+            echo -e "${UI_MUTED}  • Insufficient permissions to access Docker socket${NC}"
+            echo -e "${UI_MUTED}  • Docker socket not properly mounted (if running in container)${NC}"
+            echo -e "\n${YELLOW}Please fix Docker connectivity before proceeding.${NC}"
+            exit 1
+        fi
     else
         echo -e "  ${UI_MUTED}docker: ${RED}✗${NC}"
         echo -e "  ${UI_MUTED}docker compose: ${RED}✗${NC}"
@@ -1133,7 +1147,8 @@ generate_dashboard() {
         found=true
     fi
     if [[ "$found" == false ]]; then
-        echo -e "${UI_MUTED}  No nodes or services installed${NC}\n"
+        echo -e "${CYAN}  Launch your first service...${NC}"
+        echo -e "${UI_MUTED}  Select 'Install new service' to get started${NC}\n"
     else
         echo -e "${UI_MUTED}─────────────────────────────${NC}"
         echo -e "${UI_MUTED}Legend: ${GREEN}●${NC} ${UI_MUTED}Running${NC} | ${RED}●${NC} ${UI_MUTED}Stopped${NC} | ${GREEN}✓${NC} ${UI_MUTED}Healthy${NC} | ${RED}✗${NC} ${UI_MUTED}Unhealthy${NC} | ${YELLOW}⬆${NC}  ${UI_MUTED}Update available${NC}"
